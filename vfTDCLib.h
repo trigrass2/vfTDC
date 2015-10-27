@@ -24,8 +24,8 @@
 #define VFTDC_INT_LEVEL    5
 
 #define VFTDC_MAX_BOARDS             20
-#define VFTDC_MAX_ADC_CHANNELS       16
-#define VFTDC_MAX_DATA_PER_CHANNEL  251
+#define VFTDC_MAX_TDC_CHANNELS      192
+#define VFTDC_MAX_DATA_PER_CHANNEL    8
 #define VFTDC_MAX_A32_MEM      0x800000   /* 8 Meg */
 #define VFTDC_MAX_A32MB_SIZE   0x800000  /*  8 MB */
 #define VFTDC_VME_INT_LEVEL           3     
@@ -97,10 +97,16 @@ struct vfTDC_struct
 #define VFTDC_BOARDID_GEOADR_MASK   0x00001F00
 #define VFTDC_BOARDID_CRATEID_MASK  0x000000FF
 
+/* 0x4 ptw bits and masks */
+#define VFTDC_PTW_MASK  0x000000FF
+
 /* 0x8 intsetup bits and masks */
 #define VFTDC_INTSETUP_VECTOR_MASK   0x000000FF
 #define VFTDC_INTSETUP_LEVEL_MASK    0x00000F00
 #define VFTDC_INTSETUP_ENABLE        (1<<16)
+
+/* 0xC pl bits and masks */
+#define VFTDC_PL_MASK   0x000002FF
 
 /* 0x10 adr32 bits and masks */
 #define VFTDC_ADR32_MBLK_ADDR_MAX_MASK  0x000003FE
@@ -224,6 +230,42 @@ struct vfTDC_struct
 #define VFTDC_BLOCKERROR_ZERO_WORD_COUNT   3
 #define VFTDC_BLOCKERROR_DMADONE_ERROR     4
 #define VFTDC_BLOCKERROR_NTYPES            5
+
+/* Data types and masks */
+#define VFTDC_DUMMY_DATA             0xf800f7dc
+#define VFTDC_DATA_TYPE_DEFINE       0x80000000
+#define VFTDC_DATA_TYPE_MASK         0x78000000
+
+#define VFTDC_DATA_BLOCK_HEADER      0x00000000
+#define VFTDC_DATA_BLOCK_TRAILER     0x08000000
+#define VFTDC_DATA_BLKNUM_MASK       0x0000003f
+
+struct vftdc_data_struct 
+{
+  unsigned int new_type;	
+  unsigned int type;	
+  unsigned int slot_id_hd;
+  unsigned int slot_id_tr;
+  unsigned int slot_id_evh;
+  unsigned int n_evts;
+  unsigned int blk_num;
+  unsigned int modID;
+  unsigned int PL;
+  unsigned int n_words;
+  unsigned int evt_num_1;
+  unsigned int evt_num_2;
+  unsigned int time_now;
+  unsigned int time_1;
+  unsigned int time_2;
+  unsigned int time_3;
+  unsigned int time_4;
+  unsigned int group;
+  unsigned int chan;
+  unsigned int edge_type;
+  unsigned int time_coarse;
+  unsigned int two_ns;
+  unsigned int time_fine;
+};
 
 /* Function prototypes */
 

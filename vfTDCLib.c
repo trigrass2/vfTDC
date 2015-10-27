@@ -67,12 +67,15 @@ static VOIDFUNCPTR  vfTDCIntRoutine  = NULL;    /* user intererrupt service rout
 static int          vfTDCIntArg      = 0;       /* arg to user routine */
 static unsigned int vfTDCIntLevel    = VFTDC_INT_LEVEL;       /* VME Interrupt level */
 static unsigned int vfTDCIntVec      = VFTDC_INT_VEC;  /* default interrupt vector */
+#ifdef NOTYET
 static VOIDFUNCPTR  vfTDCAckRoutine  = NULL;    /* user trigger acknowledge routine */
 static int          vfTDCAckArg      = 0;       /* arg to user trigger ack routine */
+#endif
 int                 vfTDCBlockError  = VFTDC_BLOCKERROR_NO_ERROR; /* Whether (>0) or not (0) Block Transfer had an error */
 int                 nvfTDC           = 0;       /* Number of initialized TDCs */
 
 /* Interrupt/Polling routine prototypes (static) */
+#ifdef NOTYET
 static void vfTDCInt(void);
 #ifndef VXWORKS
 static void vfTDCPoll(void);
@@ -80,6 +83,7 @@ static void vfTDCStartPollingThread(void);
 /* polling thread pthread and pthread_attr */
 pthread_attr_t vfTDCpollthread_attr;
 pthread_t      vfTDCpollthread;
+#endif
 #endif
 
 #ifdef VXWORKS
@@ -159,7 +163,6 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
   unsigned int rdata=0, a32addr=0, wreg=0;
   unsigned long laddr=0, laddr_inc=0;
   volatile struct vfTDC_struct *ft;
-  unsigned short sdata;
   int noBoardInit=0;
   int useList=0;
   int noFirmwareCheck=0;
@@ -983,28 +986,19 @@ vfTDCSoftTrig(int id)
 }
 
 /**
- * @ingroup Readout
- * @brief Read a block of events from the TI
+ * @ingroup Config
+ * @brief Set the trigger window paramters
  *
  * @param id Slot Number
- * @param   data  - local memory address to place data
- * @param   nwrds - Max number of words to transfer
- * @param   rflag - Readout Flag
- *       -       0 - programmed I/O from the specified board
- *       -       1 - DMA transfer using Universe/Tempe DMA Engine 
- *                    (DMA VME transfer Mode must be setup prior)
+ * @param latency Look back since readout trigger (steps of 4ns)
+ * @param width   width of the TDC readout window (steps of 4ns)
  *
- * @return Number of words transferred to data if successful, ERROR otherwise
+ * @return OK if successful, ERROR otherwise
  *
  */
 int
-vfTDCReadBlock(int id, volatile unsigned int *data, int nwrds, int rflag)
+vfTDCSetWindowParamters(int id, int latency, int width)
 {
-  int ii, dummy=0;
-  int dCnt, retVal, xferCount;
-  volatile unsigned int *laddr;
-  unsigned int vmeAdr, val;
-
   if(id==0) id=vfTDCID[0];
 
   if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
@@ -1014,32 +1008,120 @@ vfTDCReadBlock(int id, volatile unsigned int *data, int nwrds, int rflag)
       return ERROR;
     }
 
-  if(TDCpd==NULL)
+  if((latency<0)||(latency>VFTDC_PL_MASK))
     {
-      logMsg("\ntiReadBlock: ERROR: TI A32 not initialized\n",1,2,3,4,5,6);
+      printf("%s: ERROR: Invalid latency (%d)\n",
+	     __FUNCTION__,latency);
       return ERROR;
+    }
+
+  if((width<0)||(width>VFTDC_PTW_MASK))
+    {
+      printf("%s: ERROR: Invalid width (%d)\n",
+	     __FUNCTION__,width);
+      return ERROR;
+    }
+
+  VLOCK;
+  vmeWrite32(&TDCp[id]->pl,  latency);
+  vmeWrite32(&TDCp[id]->ptw, width);
+  VUNLOCK;
+
+  return OK;
+}
+
+const char *vfTDC_blockerror_names[VFTDC_BLOCKERROR_NTYPES] =
+  {
+    "No Error",
+    "Termination on word count",
+    "Unknown Bus Error",
+    "Zero Word Count",
+    "DmaDone(..) Error"
+  };
+
+/**
+ *  @ingroup Readout
+ *  @brief Return the block error flag and optionally print out the description to standard out
+ *  @param pflag If >0 will print the error flag to standard out.
+ *  @return Block Error flag.
+ *  @sa VFTDC_BLOCKERROR_FLAGS
+ */
+int
+vfTDCReadBlockStatus(int pflag)
+{
+  if(pflag)
+    {
+      if(vfTDCBlockError!=VFTDC_BLOCKERROR_NO_ERROR)
+	{
+	  printf("\n%s: ERROR: %s\n",
+		 __FUNCTION__,vfTDC_blockerror_names[vfTDCBlockError]);
+	}
+    }
+
+  return vfTDCBlockError;
+}
+
+
+/**
+ *  @ingroup Readout
+ *  @brief General Data readout routine
+ *
+ *  @param  id     Slot number of module to read
+ *  @param  data   local memory address to place data
+ *  @param  nwrds  Max number of words to transfer
+ *  @param  rflag  Readout Flag
+ * <pre>
+ *              0 - programmed I/O from the specified board
+ *              1 - DMA transfer using Universe/Tempe DMA Engine 
+ *                    (DMA VME transfer Mode must be setup prior)
+ *              2 - Multiblock DMA transfer (Multiblock must be enabled
+ *                     and daisychain in place or SD being used)
+ * </pre>
+ *  @return Number of words inserted into data if successful.  Otherwise ERROR.
+ */
+int
+vfTDCReadBlock(int id, volatile UINT32 *data, int nwrds, int rflag)
+{
+  int ii, blknum;
+  int stat, retVal, xferCount, rmode;
+  int dCnt, berr=0;
+  int dummy=0;
+  volatile unsigned int *laddr;
+  unsigned int bhead, ehead, val;
+  unsigned int vmeAdr, csr;
+
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
+    {
+      logMsg("\nvfTDCReadBlock: ERROR : VFTDC in slot %d is not initialized\n\n",id,0,0,0,0,0);
+      return(ERROR);
     }
 
   if(data==NULL) 
     {
-      logMsg("\ntiReadBlock: ERROR: Invalid Destination address\n",0,0,0,0,0,0);
+      logMsg("\nvfTDCReadBlock: ERROR: Invalid Destination address\n\n",0,0,0,0,0,0);
       return(ERROR);
     }
 
-  VLOCK;
-  if(rflag >= 1)
-    { /* Block transfer */
-      /* Assume that the DMA programming is already setup. 
-	 Don't Bother checking if there is valid data - that should be done prior
+  vfTDCBlockError=VFTDC_BLOCKERROR_NO_ERROR;
+  if(nwrds <= 0) nwrds= (VFTDC_MAX_TDC_CHANNELS*VFTDC_MAX_DATA_PER_CHANNEL) + 8;
+  rmode = rflag&0x0f;
+  
+  if(rmode >= 1) 
+    { /* Block Transfers */
+    
+      /*Assume that the DMA programming is already setup. */
+      /* Don't Bother checking if there is valid data - that should be done prior
 	 to calling the read routine */
-      
+
       /* Check for 8 byte boundary for address - insert dummy word (Slot 0 VFTDC Dummy DATA)*/
-      if((unsigned long) (data)&0x7)
+      if((unsigned long) (data)&0x7) 
 	{
 #ifdef VXWORKS
-	  *data = (VFTDC_DATA_TYPE_DEFINE_MASK) | (VFTDC_FILLER_WORD_TYPE) | (tiSlotNumber<<22);
+	  *data = VFTDC_DUMMY_DATA;
 #else
-	  *data = LSWAP((VFTDC_DATA_TYPE_DEFINE_MASK) | (VFTDC_FILLER_WORD_TYPE) | (tiSlotNumber<<22));
+	  *data = LSWAP(VFTDC_DUMMY_DATA);
 #endif
 	  dummy = 1;
 	  laddr = (data + 1);
@@ -1049,9 +1131,28 @@ vfTDCReadBlock(int id, volatile unsigned int *data, int nwrds, int rflag)
 	  dummy = 0;
 	  laddr = data;
 	}
-      
-      vmeAdr = (unsigned long)TDCpd - vfTDCA32Offset;
 
+      VLOCK;
+      if(rmode == 2) 
+	{ /* Multiblock Mode */
+#ifdef NOTSUPPORTED
+	  if((vmeRead32(&TDCp[id]->vmeControl)&VFTDC_VMECONTROL_FIRST_BOARD)==0) 
+	    {
+	      logMsg("\nvfTDCReadBlock: ERROR: VFTDC in slot %d is not First Board\n\n",id,0,0,0,0,0);
+	      VUNLOCK
+	      return(ERROR);
+	    }
+	  vmeAdr = (unsigned int)((unsigned long)(VFTDCpmb) - vfTDCA32Offset);
+#else
+	  logMsg("\nvfTDCReadBlock: ERROR: Multiblock readout not yet supported\n\n",1,2,3,4,5,6);
+	  VUNLOCK;
+	  return ERROR;
+#endif
+	}
+      else
+	{
+	  vmeAdr = (unsigned int)((unsigned long)TDCpd[id] - vfTDCA32Offset);
+	}
 #ifdef VXWORKS
       retVal = sysVmeDmaSend((UINT32)laddr, vmeAdr, (nwrds<<2), 0);
 #else
@@ -1059,8 +1160,8 @@ vfTDCReadBlock(int id, volatile unsigned int *data, int nwrds, int rflag)
 #endif
       if(retVal != 0) 
 	{
-	  logMsg("\ntiReadBlock: ERROR in DMA transfer Initialization 0x%x\n",retVal,0,0,0,0,0);
-	  VUNLOCK;
+	  logMsg("\nvfTDCReadBlock: ERROR in DMA transfer Initialization 0x%x\n\n",retVal,0,0,0,0,0);
+	  VUNLOCK
 	  return(retVal);
 	}
 
@@ -1071,93 +1172,153 @@ vfTDCReadBlock(int id, volatile unsigned int *data, int nwrds, int rflag)
       retVal = vmeDmaDone();
 #endif
 
-      if(retVal > 0)
+      if(retVal > 0) 
 	{
-#ifdef VXWORKS
-	  xferCount = (nwrds - (retVal>>2) + dummy); /* Number of longwords transfered */
+#ifdef NOTSUPPORTED
+	  /* Check to see that Bus error was generated by VFTDC */
+	  if(rmode == 2) 
+	    {
+	      csr = vmeRead32(&TDCp[vfTDCMaxSlot]->main.blockCSR);  /* from Last VFTDC */
+	      stat = (csr)&VFTDC_BLOCKCSR_BERR_ASSERTED;  /* from Last VFTDC */
+	    }
+	  else
+	    {
+	      csr = vmeRead32(&TDCp[id]->main.blockCSR);  /* from Last VFTDC */
+	      stat = (csr)&VFTDC_BLOCKCSR_BERR_ASSERTED;  /* from Last VFTDC */
+	    }
 #else
-	  xferCount = ((retVal>>2) + dummy); /* Number of longwords transfered */
+	  stat=1;
 #endif
-	  VUNLOCK;
-	  return(xferCount);
-	}
-      else if (retVal == 0) 
-	{
+	  if((retVal>0) && (stat)) 
+	    {
 #ifdef VXWORKS
-	  logMsg("\ntiReadBlock: WARN: DMA transfer terminated by word count 0x%x\n",
-		 nwrds,0,0,0,0,0);
+	      xferCount = (nwrds - (retVal>>2) + dummy);  /* Number of Longwords transfered */
 #else
-	  logMsg("\ntiReadBlock: WARN: DMA transfer returned zero word count 0x%x\n",
-		 nwrds,0,0,0,0,0,0);
+	      xferCount = ((retVal>>2) + dummy);  /* Number of Longwords transfered */
 #endif
-	  VUNLOCK;
+	      VUNLOCK
+	      return(xferCount); /* Return number of data words transfered */
+	    }
+	  else
+	    {
+#ifdef VXWORKS
+	      xferCount = (nwrds - (retVal>>2) + dummy);  /* Number of Longwords transfered */
+#else
+	      xferCount = ((retVal>>2) + dummy);  /* Number of Longwords transfered */
+#endif
+	      logMsg("vfTDCReadBlock: DMA transfer terminated by unknown BUS Error (csr=0x%x xferCount=%d id=%d)\n",
+		     csr,xferCount,id,0,0,0);
+	      VUNLOCK
+	      vfTDCBlockError=VFTDC_BLOCKERROR_UNKNOWN_BUS_ERROR;
+	      return(xferCount);
+	    }
+	} 
+      else if (retVal == 0)
+	{ /* Block Error finished without Bus Error */
+#ifdef VXWORKS
+	  logMsg("vfTDCReadBlock: WARN: DMA transfer terminated by word count 0x%x\n",nwrds,0,0,0,0,0);
+	  vfTDCBlockError=VFTDC_BLOCKERROR_TERM_ON_WORDCOUNT;
+#else
+	  logMsg("vfTDCReadBlock: WARN: DMA transfer returned zero word count 0x%x\n",nwrds,0,0,0,0,0);
+	  vfTDCBlockError=VFTDC_BLOCKERROR_ZERO_WORD_COUNT;
+#endif
+	  VUNLOCK
 	  return(nwrds);
-	}
+	} 
       else 
 	{  /* Error in DMA */
 #ifdef VXWORKS
-	  logMsg("\ntiReadBlock: ERROR: sysVmeDmaDone returned an Error\n",
-		 0,0,0,0,0,0);
+	  logMsg("\nvfTDCReadBlock: ERROR: sysVmeDmaDone returned an Error\n\n",0,0,0,0,0,0);
 #else
-	  logMsg("\ntiReadBlock: ERROR: vmeDmaDone returned an Error\n",
-		 0,0,0,0,0,0);
+	  logMsg("\nvfTDCReadBlock: ERROR: vmeDmaDone returned an Error\n\n",0,0,0,0,0,0);
 #endif
-	  VUNLOCK;
+	  VUNLOCK
+	  vfTDCBlockError=VFTDC_BLOCKERROR_DMADONE_ERROR;
 	  return(retVal>>2);
-	  
 	}
-    }
-  else
-    { /* Programmed IO */
+
+    } 
+  else 
+    {  /*Programmed IO */
+
+      /* Check if Bus Errors are enabled. If so then disable for Prog I/O reading */
+      VLOCK;
+      berr = vmeRead32(&TDCp[id]->vmeControl)&VFTDC_VMECONTROL_BERR;
+      if(berr)
+	vmeWrite32(&TDCp[id]->vmeControl, 
+		   vmeRead32(&TDCp[id]->vmeControl) & ~VFTDC_VMECONTROL_BERR);
 
       dCnt = 0;
-      ii=0;
+      /* Read Block Header - should be first word */
+      bhead = (unsigned int) *TDCpd[id]; 
+#ifndef VXWORKS
+      bhead = LSWAP(bhead);
+#endif
+      if((bhead&VFTDC_DATA_TYPE_DEFINE)&&((bhead&VFTDC_DATA_TYPE_MASK) == VFTDC_DATA_BLOCK_HEADER)) 
+	{
+	  blknum = bhead&VFTDC_DATA_BLKNUM_MASK;
+	  ehead = (unsigned int) *TDCpd[id];
+#ifndef VXWORKS
+	  ehead = LSWAP(ehead);
+#endif
+#ifdef VXWORKS
+	  data[dCnt] = bhead;
+#else
+	  data[dCnt] = LSWAP(bhead); /* Swap back to little-endian */
+#endif
+	  dCnt++;
+#ifdef VXWORKS
+	  data[dCnt] = ehead;
+#else
+	  data[dCnt] = LSWAP(ehead); /* Swap back to little-endian */
+#endif
+	  dCnt++;
+	}
+      else
+	{
+	  /* We got bad data - Check if there is any data at all */
+	  if( ((vmeRead32(&TDCp[id]->blockBuffer) & 
+		VFTDC_BLOCKBUFFER_BLOCKS_READY_MASK)>>16) == 0) 
+	    {
+	      logMsg("vfTDCReadBlock: FIFO Empty (0x%08x)\n",bhead,0,0,0,0,0);
+	      VUNLOCK
+	      return(0);
+	    } 
+	  else 
+	    {
+	      logMsg("\nvfTDCReadBlock: ERROR: Invalid Header Word 0x%08x\n\n",bhead,0,0,0,0,0);
+	      VUNLOCK
+	      return(ERROR);
+	    }
+	}
 
+      ii=0;
       while(ii<nwrds) 
 	{
-	  val = (unsigned int) *TDCpd;
+	  val = (unsigned int) *TDCpd[id];
+	  data[ii+2] = val;
 #ifndef VXWORKS
 	  val = LSWAP(val);
 #endif
-	  if(val == (VFTDC_DATA_TYPE_DEFINE_MASK | VFTDC_BLOCK_TRAILER_WORD_TYPE 
-		     | (tiSlotNumber<<22) | (ii+1)) )
-	    {
-#ifndef VXWORKS
-	      val = LSWAP(val);
-#endif
-	      data[ii] = val;
-	      if(((ii+1)%2)!=0)
-		{
-		  /* Read out an extra word (filler) in the fifo */
-		  val = (unsigned int) *TDCpd;
-#ifndef VXWORKS
-		  val = LSWAP(val);
-#endif
-		  if(((val & VFTDC_DATA_TYPE_DEFINE_MASK) != VFTDC_DATA_TYPE_DEFINE_MASK) ||
-		     ((val & VFTDC_WORD_TYPE_MASK) != VFTDC_FILLER_WORD_TYPE))
-		    {
-		      logMsg("\ntiReadBlock: ERROR: Unexpected word after block trailer (0x%08x)\n",
-			     val,2,3,4,5,6);
-		    }
-		}
-	      break;
-	    }
-#ifndef VXWORKS
-	  val = LSWAP(val);
-#endif
-	  data[ii] = val;
+	  if( (val&VFTDC_DATA_TYPE_DEFINE) 
+	      && ((val&VFTDC_DATA_TYPE_MASK) == VFTDC_DATA_BLOCK_TRAILER) )
+	    break;
 	  ii++;
 	}
       ii++;
       dCnt += ii;
 
-      VUNLOCK;
+
+      if(berr)
+	vmeWrite32(&TDCp[id]->vmeControl, 
+		   vmeRead32(&TDCp[id]->vmeControl) | VFTDC_VMECONTROL_BERR);
+
+      VUNLOCK
       return(dCnt);
     }
 
-  VUNLOCK;
-
-  return OK;
+  VUNLOCK
+  return(OK);
 }
 
 #ifdef NOTYET
@@ -1540,9 +1701,9 @@ vfTDCBReady(int id)
  *
  * @param id Slot Number
  * @param   source
- *         -   0:  Onboard clock
- *         -   1:  External clock (HFBR1 input)
- *         -   5:  External clock (HFBR5 input)
+ *         -   0:  HFBR1
+ *         -   2:  Internal clock
+ *         -   3:  VXS
  *
  * @return OK if successful, otherwise ERROR
  */
@@ -1550,8 +1711,7 @@ int
 vfTDCSetClockSource(int id, unsigned int source)
 {
   int rval=OK;
-  unsigned int clkset=0;
-  unsigned int clkread=0;
+  unsigned int clkread=0, clkset=0;
   char sClock[20] = "";
 
   if(id==0) id=vfTDCID[0];
@@ -1565,17 +1725,14 @@ vfTDCSetClockSource(int id, unsigned int source)
 
   switch(source)
     {
-    case 0: /* ONBOARD */
-      clkset = VFTDC_CLOCK_INTERNAL;
+    case VFTDC_CLOCK_INTERNAL:
       sprintf(sClock,"ONBOARD (%d)",source);
       break;
-    case 1: /* EXTERNAL (HFBR1) */
-      clkset = VFTDC_CLOCK_HFBR1;
+    case VFTDC_CLOCK_HFBR1:
       sprintf(sClock,"EXTERNAL-HFBR1 (%d)",source);
       break;
-    case 5: /* EXTERNAL (HFBR5) */
-      clkset = VFTDC_CLOCK_HFBR5;
-      sprintf(sClock,"EXTERNAL-HFBR5 (%d)",source);
+    case VFTDC_CLOCK_VXS:
+      sprintf(sClock,"EXTERNAL-VXS (%d)",source);
       break;
     default:
       printf("%s: ERROR: Invalid Clock Souce (%d)\n",__FUNCTION__,source);
@@ -1586,12 +1743,7 @@ vfTDCSetClockSource(int id, unsigned int source)
 
 
   VLOCK;
-  vmeWrite32(&TDCp[id]->clock, clkset);
-  /* Reset DCM (Digital Clock Manager) - 250/200MHz */
-  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_CLK250);
-  taskDelay(1);
-  /* Reset DCM (Digital Clock Manager) - 125MHz */
-  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_CLK125);
+  vmeWrite32(&TDCp[id]->clock, source);
   taskDelay(1);
 
   if(source==1) /* Turn on running mode for External Clock verification */
@@ -1602,7 +1754,7 @@ vfTDCSetClockSource(int id, unsigned int source)
       if(clkread != clkset)
 	{
 	  printf("%s: ERROR Setting Clock Source (clkset = 0x%x, clkread = 0x%x)\n",
-		 __FUNCTION__,clkset, clkread);
+		 __FUNCTION__,source, clkread);
 	  rval = ERROR;
 	}
       vmeWrite32(&TDCp[id]->runningMode,VFTDC_RUNNINGMODE_DISABLE);
@@ -2229,3 +2381,152 @@ vfTDCGetAckCount()
   return(rval);
 }
 #endif /* NOTYET */
+
+/**
+ *  @ingroup Status
+ *  @brief Decode a data word from an vfTDC and print to standard out.
+ *  @param data 32bit vfTDC data word
+ */
+
+struct vftdc_data_struct vftdc_data;
+
+void 
+vfTDCDataDecode(unsigned int data)
+{
+  int i_print = 1;
+  static unsigned int type_last = 15;	/* initialize to type FILLER WORD */
+  static unsigned int time_last = 0;
+
+  if( data & 0x80000000 )		/* data type defining word */
+    {
+      vftdc_data.new_type = 1;
+      vftdc_data.type = (data & 0x78000000) >> 27;
+    }
+  else
+    {
+      vftdc_data.new_type = 0;
+      vftdc_data.type = type_last;
+    }
+        
+  switch( vftdc_data.type )
+    {
+    case 0:		/* BLOCK HEADER */
+      if( vftdc_data.new_type )
+	{
+	  vftdc_data.slot_id_hd = ((data) & 0x7C00000) >> 22;
+	  vftdc_data.modID      = (data & 0x3C0000)>>18;
+	  vftdc_data.blk_num    = (data & 0x3FF00) >> 8;
+	  vftdc_data.n_evts     = (data & 0xFF);
+	  if( i_print ) 
+	    printf("%8X - BLOCK HEADER - slot = %d  modID = %d   n_evts = %d   n_blk = %d\n",
+		   data, vftdc_data.slot_id_hd, 
+		   vftdc_data.modID, vftdc_data.n_evts, vftdc_data.blk_num);
+	}
+      else
+	{
+	  vftdc_data.PL  = (data & 0x1FFC0000) >> 18;
+
+	  printf("%8X - BLOCK HEADER 2 - PL = %d\n",
+		 data, 
+		 vftdc_data.PL);
+	}
+      break;
+
+    case 1:		/* BLOCK TRAILER */
+      vftdc_data.slot_id_tr = (data & 0x7C00000) >> 22;
+      vftdc_data.n_words = (data & 0x3FFFFF);
+      if( i_print ) 
+	printf("%8X - BLOCK TRAILER - slot = %d   n_words = %d\n",
+	       data, vftdc_data.slot_id_tr, vftdc_data.n_words);
+      break;
+
+    case 2:		/* EVENT HEADER */
+      vftdc_data.slot_id_evh = (data & 0x7C00000) >> 22;
+      vftdc_data.evt_num_1 = (data & 0x3FFFFF);
+      if( i_print ) 
+	printf("%8X - EVENT HEADER 1 - slot = %d   evt_num = %d\n", data, 
+	       vftdc_data.slot_id_evh, vftdc_data.evt_num_1);
+      break;
+
+    case 3:		/* TRIGGER TIME */
+      if( vftdc_data.new_type )
+	{
+	  vftdc_data.time_1 = (data & 0x7FFFFFF);
+	  if( i_print ) 
+	    printf("%8X - TRIGGER TIME 1 - time = %08x\n", data, vftdc_data.time_1);
+	  vftdc_data.time_now = 1;
+	  time_last = 1;
+	}    
+      else
+	{
+	  if( time_last == 1 )
+	    {
+	      vftdc_data.time_2 = (data & 0xFFFFFF);
+	      if( i_print ) 
+		printf("%8X - TRIGGER TIME 2 - time = %08x\n", data, vftdc_data.time_2);
+	      vftdc_data.time_now = 2;
+	    }    
+	  else if( time_last == 2 )
+	    {
+	      vftdc_data.time_3 = (data & 0xFFFFFF);
+	      if( i_print ) 
+		printf("%8X - TRIGGER TIME 3 - time = %08x\n", data, vftdc_data.time_3);
+	      vftdc_data.time_now = 3;
+	    }    
+	  else if( time_last == 3 )
+	    {
+	      vftdc_data.time_4 = (data & 0xFFFFFF);
+	      if( i_print ) 
+		printf("%8X - TRIGGER TIME 4 - time = %08x\n", data, vftdc_data.time_4);
+	      vftdc_data.time_now = 4;
+	    }    
+	  else
+	    if( i_print ) 
+	      printf("%8X - TRIGGER TIME - (ERROR)\n", data);
+	                
+	  time_last = vftdc_data.time_now;
+	}    
+      break;
+
+    case 4:
+      break;
+ 
+    case 5:
+      break;
+
+    case 6:
+      break; 
+
+    case 7:
+      break;
+ 
+    case 8:
+      break;
+
+    case 9:		/* UNDEFINED TYPE */
+    case 10:		/* UNDEFINED TYPE */
+    case 11:		/* UNDEFINED TYPE */
+    case 12:		/* UNDEFINED TYPE */
+      if( i_print ) 
+	printf("%8X - UNDEFINED TYPE = %d\n", data, vftdc_data.type);
+      break;
+ 
+    case 13:		/* END OF EVENT */
+      if( i_print ) 
+	printf("%8X - END OF EVENT = %d\n", data, vftdc_data.type);
+      break;
+
+    case 14:		/* DATA NOT VALID (no data available) */
+      if( i_print ) 
+	printf("%8X - DATA NOT VALID = %d\n", data, vftdc_data.type);
+      break;
+
+    case 15:		/* FILLER WORD */
+      if( i_print ) 
+	printf("%8X - FILLER WORD = %d\n", data, vftdc_data.type);
+      break;
+    }
+	
+  type_last = vftdc_data.type;	/* save type of current data word */
+		   
+}        
