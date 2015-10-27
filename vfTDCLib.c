@@ -50,7 +50,7 @@ pthread_mutex_t   vfTDCMutex = PTHREAD_MUTEX_INITIALIZER;
 #define VUNLOCK   if(pthread_mutex_unlock(&vfTDCMutex)<0) perror("pthread_mutex_unlock");
 
 /* Global Variables */
-volatile struct VFTDC_A24RegStruct *TDCp[VFTDC_MAX_BOARDS+1];  /* pointer to vfTDC memory map */
+volatile struct vfTDC_struct       *TDCp[VFTDC_MAX_BOARDS+1];  /* pointer to vfTDC memory map */
 volatile        unsigned int       *TDCpd[VFTDC_MAX_BOARDS+1]; /* pointer to vfTDC data FIFO */
 volatile        unsigned int       *TDCpmb=NULL;/* pointer to vfTDC data FIFO */
 int                 vfTDCID[VFTDC_MAX_BOARDS];      /* array of slot numbers for FADCs */
@@ -70,6 +70,7 @@ static unsigned int vfTDCIntVec      = VFTDC_INT_VEC;  /* default interrupt vect
 static VOIDFUNCPTR  vfTDCAckRoutine  = NULL;    /* user trigger acknowledge routine */
 static int          vfTDCAckArg      = 0;       /* arg to user trigger ack routine */
 int                 vfTDCBlockError  = VFTDC_BLOCKERROR_NO_ERROR; /* Whether (>0) or not (0) Block Transfer had an error */
+int                 nvfTDC           = 0;       /* Number of initialized TDCs */
 
 /* Interrupt/Polling routine prototypes (static) */
 static void vfTDCInt(void);
@@ -101,18 +102,6 @@ IMPORT  STATUS sysVmeDmaSend(UINT32, UINT32, int, BOOL);
 
 
 /**
- * @defgroup Config Initialization/Configuration
- * @defgroup SDCConfig SDC Initialization/Configuration
- *   @ingroup Config
- * @defgroup Status Status
- * @defgroup SDCStatus SDC Status
- *   @ingroup Status
- * @defgroup Readout Data Readout
- * @defgroup IntPoll Interrupt/Polling
- * @defgroup Deprec Deprecated - To be removed
- */
-
-/**
  *  @ingroup Config
  *  @brief Initialize JLAB vfTDC Library. 
  *
@@ -120,27 +109,25 @@ IMPORT  STATUS sysVmeDmaSend(UINT32, UINT32, int, BOOL);
  *  - A24 VME Address of the vfTDC
  * @param addr_inc
  *  - Amount to increment addr to find the next vfTDC
- * @param nadc
+ * @param ntdc
  *  - Number of times to increment
  *
- *  @param iFlag 18 bit integer
+ *  @param Flag 18 bit integer
  * <pre>
- *       Low 6 bits - Specifies the default Signal distribution (clock,trigger) 
+ *       Low 7 bits - Specifies the default Signal distribution (clock,trigger) 
  *                    sources for the board (Internal, FrontPanel, VXS, VME(Soft))
- *       bit    0:  defines Sync Reset source
- *                     0  VME (Software Sync-Reset)
- *                     1  Front Panel/VXS/P2 (Depends on Clk/Trig source selection)
- *       bits 3-1:  defines Trigger source
- *               0 0 0  VME (Software Triggers)
- *               0 0 1  Front Panel Input
- *               0 1 0  VXS (P0) 
- *               1 0 0  Internal Trigger Logic (HITSUM FPGA)
- *               (all others Undefined - default to VME/Software)
- *       bits 5-4:  defines Clock Source
- *           0 0  Internal 250MHz Clock
- *           0 1  Front Panel 
- *           1 0  VXS (P0)
- *           1 1  P2 Connector (Backplane)
+ *       bit  1-0:  defines Sync Reset source
+ *                   0 0  VME (Software Sync-Reset)
+ *                   0 1  HFBR1
+ *                   1 0  VXS
+ *       bits 4-2  defines Trigger source
+ *             0 0 0  VME (Software Triggers)
+ *             0 0 1  HFBR1
+ *             0 1 0  VXS
+ *       bits 6-5:  defines Clock Source
+ *         0 0  Internal 250MHz Clock
+ *         0 1  HFBR1
+ *         1 0  VXS
  * </pre>
  *
  * <pre>
@@ -162,29 +149,34 @@ IMPORT  STATUS sysVmeDmaSend(UINT32, UINT32, int, BOOL);
  * @return OK, or ERROR if the address is invalid or a board is not present.
  */
 STATUS 
-vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
+vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 {
   int ii, res, errFlag = 0;
   int boardID = 0;
   int maxSlot = 1;
   int minSlot = 21;
   int trigSrc=0, clkSrc=0, srSrc=0;
-  unsigned int rdata=0, a32addr=0;
+  unsigned int rdata=0, a32addr=0, wreg=0;
   unsigned long laddr=0, laddr_inc=0;
-  volatile struct vfTDC_struct *fa;
+  volatile struct vfTDC_struct *ft;
   unsigned short sdata;
   int noBoardInit=0;
   int useList=0;
   int noFirmwareCheck=0;
 
   /* Check if we are to exit when pointers are setup */
-  noBoardInit=(iFlag&VFTDC_INIT_SKIP)>>16;
+  noBoardInit     = (iFlag&VFTDC_INIT_SKIP)>>16;
 
   /* Check if we're initializing using a list */
-  useList=(iFlag&VFTDC_INIT_USE_ADDRLIST)>>17;
+  useList         = (iFlag&VFTDC_INIT_USE_ADDRLIST)>>17;
 
   /* Are we skipping the firmware check? */
-  noFirmwareCheck=(iFlag&VFTDC_INIT_SKIP_FIRMWARE_CHECK)>>18;
+  noFirmwareCheck = (iFlag&VFTDC_INIT_SKIP_FIRMWARE_CHECK)>>18;
+
+  /* Determine clock, sync, and trigger sources */
+  srSrc   = (iFlag&VFTDC_INIT_SYNCRESETSRC_MASK);
+  trigSrc = (iFlag&VFTDC_INIT_TRIGSRC_MASK)>>1;
+  clkSrc  = (iFlag&VFTDC_INIT_CLKSRC_MASK)>>4;
 
   /* Check for valid address */
   if(addr==0) 
@@ -201,8 +193,8 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
     }
   else
     { /* A24 Addressing */
-      if( ((addr_inc==0)||(nadc==0)) && (useList==0) )
-	nadc = 1; /* assume only one vfTDC to initialize */
+      if( ((addr_inc==0)||(ntdc==0)) && (useList==0) )
+	ntdc = 1; /* assume only one vfTDC to initialize */
 
       /* get the vfTDC address */
 #ifdef VXWORKS
@@ -225,11 +217,10 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
     }
 
   /* Init Some Global variables */
-  vfTDCSource = iFlag&VFTDC_SOURCE_MASK;
-  vfTDCInited = nvfTDC = 0;
-  bzero((char *)vfTDCID,sizeof(vfTDCID));
+  nvfTDC = 0;
+  memset((char *)vfTDCID,0,sizeof(vfTDCID));
 
-  for (ii=0;ii<nadc;ii++) 
+  for (ii=0;ii<ntdc;ii++) 
     {
       if(useList==1)
 	{
@@ -239,22 +230,22 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
 	{
 	  laddr_inc = laddr +ii*addr_inc;
 	}
-      fa = (struct vfTDC_struct *)laddr_inc;
+      ft = (struct vfTDC_struct *)laddr_inc;
       /* Check if Board exists at that address */
 #ifdef VXWORKS
-      res = vxMemProbe((char *) &(fa->version),VX_READ,4,(char *)&rdata);
+      res = vxMemProbe((char *) &(ft->boardID),VX_READ,4,(char *)&rdata);
 #else
-      res = vmeMemProbe((char *) &(fa->version),4,(char *)&rdata);
+      res = vmeMemProbe((char *) &(ft->boardID),4,(char *)&rdata);
 #endif
       if(res < 0) 
 	{
 #ifdef VXWORKS
 	  printf("%s: WARN: No addressable board at addr=0x%x\n",
-		 __FUNCTION__,(UINT32) fa);
+		 __FUNCTION__,(UINT32) ft);
 #else
 	  printf("%s: WARN: No addressable board at VME (Local) addr=0x%x (0x%lx)\n",
 		 __FUNCTION__,
-		 (UINT32)(laddr_inc-vfTDCA24Offset), (unsigned long) fa);
+		 (UINT32)(laddr_inc-vfTDCA24Offset), (unsigned long) ft);
 #endif
 	  errFlag = 1;
 	  continue;
@@ -262,7 +253,7 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
       else 
 	{
 	  /* Check that it is an FA board */
-	  if((rdata&VFTDC_BOARD_MASK) != VFTDC_BOARD_ID) 
+	  if(((rdata&VFTDC_BOARDID_TYPE_MASK)>>16) != VFTDC_BOARDID_TYPE_VFTDC) 
 	    {
 	      printf("%s: WARN: For board at 0x%x, Invalid Board ID: 0x%x\n",
 		     __FUNCTION__,
@@ -272,7 +263,7 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
 	  else 
 	    {
 	      /* Check if this is board has a valid slot number */
-	      boardID =  ((vmeRead32(&(fa->intr)))&VFTDC_SLOT_ID_MASK)>>16;
+	      boardID =  (rdata&VFTDC_BOARDID_GEOADR_MASK)>>8;
 
 	      if((boardID <= 0)||(boardID >21)) 
 		{
@@ -281,164 +272,58 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
 		  continue;
 		}
 
+#ifdef NOTYET
 	      if(!noFirmwareCheck)
 		{
-		  /* Check Control FPGA firmware version */
+		  /* Check FPGA firmware version */
 		  if( (rdata&VFTDC_VERSION_MASK) < VFTDC_SUPPORTED_CTRL_FIRMWARE )
 		    {
-		      printf("%s: ERROR: Slot %2d: Control FPGA Firmware (0x%02x) not supported by this driver.\n",
+		      printf("%s: ERROR: Slot %2d: FPGA Firmware (0x%02x) not supported by this driver.\n",
 			     __FUNCTION__,boardID, rdata & VFTDC_VERSION_MASK);
 		      printf("\tUpdate to 0x%02x to use this driver.\n",VFTDC_SUPPORTED_CTRL_FIRMWARE);
 		      continue;
 		    }
 
-		  /* Check Processing FPGA firmware version */
-		  proc_version = 
-		    (unsigned short)(vmeRead32(&fa->adc_status[0]) & VFTDC_ADC_VERSION_MASK);
-
-		  for(icheck=0; icheck<VFTDC_SUPPORTED_PROC_FIRMWARE_NUMBER; icheck++)
-		    {
-		      if(proc_version == supported_proc[icheck])
-			proc_supported=1;
-		    }
-
-		  if(proc_supported==0)
-		    {
-		      printf("%s: ERROR: Slot %2d: Proc FPGA Firmware (0x%02x) not supported by this driver.\n",
-			     __FUNCTION__,boardID, proc_version);
-		      printf("\tSupported Proc Firmware:  ");
-		      for(icheck=0; icheck<VFTDC_SUPPORTED_PROC_FIRMWARE_NUMBER; icheck++)
-			{
-			  printf("0x%02x ",supported_proc[icheck]);
-			}
-		      printf("\n");
-		      continue;
-		    }
 		}
 	      else
 		{
-		  /* Check Control FPGA firmware version */
+		  /* Check FPGA firmware version */
 		  if( (rdata&VFTDC_VERSION_MASK) < VFTDC_SUPPORTED_CTRL_FIRMWARE )
 		    {
-		      printf("%s: WARN: Slot %2d: Control FPGA Firmware (0x%02x) not supported by this driver (ignored).\n",
+		      printf("%s: WARN: Slot %2d: FPGA Firmware (0x%02x) not supported by this driver (ignored).\n",
 			     __FUNCTION__,boardID, rdata & VFTDC_VERSION_MASK);
 		    }
 
-		  /* Check Processing FPGA firmware version */
-		  proc_version = 
-		    (unsigned short)(vmeRead32(&fa->adc_status[0]) & VFTDC_ADC_VERSION_MASK);
-
-		  for(icheck=0; icheck<VFTDC_SUPPORTED_PROC_FIRMWARE_NUMBER; icheck++)
-		    {
-		      if(proc_version == supported_proc[icheck])
-			proc_supported=1;
-		    }
-
-		  if(proc_supported==0)
-		    {
-		      printf("%s: WARN: Slot %2d: Proc FPGA Firmware (0x%02x) not supported by this driver (ignored).\n",
-			     __FUNCTION__,boardID, proc_version & VFTDC_VERSION_MASK);
-		    }
 		}
+#endif /* NOTYET */
 
-	      FAp[boardID] = (struct vfTDC_struct *)(laddr_inc);
-	      vfTDCRev[boardID] = rdata&VFTDC_VERSION_MASK;
-	      vfTDCProcRev[boardID] = proc_version;
+	      TDCp[boardID] = (struct vfTDC_struct *)(laddr_inc);
 	      vfTDCID[nvfTDC] = boardID;
 	      if(boardID >= maxSlot) maxSlot = boardID;
 	      if(boardID <= minSlot) minSlot = boardID;
 	      
 	      printf("Initialized VFTDC %2d  Slot #%2d at VME (Local) address 0x%06x (0x%lx) \n",
 		     nvfTDC,vfTDCID[nvfTDC],
-		     (UINT32) (unsigned long)(FAp[(vfTDCID[nvfTDC])]-vfTDCA24Offset),
-		     (unsigned long) FAp[(vfTDCID[nvfTDC])]);
+		     (UINT32) (unsigned long)(TDCp[(vfTDCID[nvfTDC])]-vfTDCA24Offset),
+		     (unsigned long) TDCp[(vfTDCID[nvfTDC])]);
 	    }
 	  nvfTDC++;
 	}
     }
 
-  /* Check if we are using a JLAB VFTDC Signal Distribution Card (SDC)
-     NOTE the SDC board only supports 7 VFTDCs - so if there are
-     more than 7 VFTDCs in the crate they can only be controlled by daisychaining 
-     multiple SDCs together - or by using a VXS Crate with SD switch card 
-  */
-  a16addr = iFlag&VFTDC_SDC_ADR_MASK;
-  if(a16addr) 
-    {
-#ifdef VXWORKS
-      res = sysBusToLocalAdrs(0x29,(char *)a16addr,(char **)&laddr);
-      if (res != 0) 
-	{
-	  printf("%s: ERROR in sysBusToLocalAdrs(0x29,0x%x,&laddr) \n",
-		 __FUNCTION__,a16addr);
-	  return(ERROR);
-	}
-
-      res = vxMemProbe((char *) laddr,VX_READ,2,(char *)&sdata);
-#else
-      res = vmeBusToLocalAdrs(0x29,(char *)(unsigned long)a16addr,(char **)&laddr);
-      if (res != 0) 
-	{
-	  printf("%s: ERROR in vmeBusToLocalAdrs(0x29,0x%x,&laddr) \n",
-		 __FUNCTION__,a16addr);
-	  return(ERROR);
-	}
-      res = vmeMemProbe((char *) laddr,2,(char *)&sdata);
-#endif
-      if(res < 0) 
-	{
-	  printf("%s: ERROR: No addressable SDC board at addr=0x%x\n",
-		 __FUNCTION__,(UINT32) laddr);
-	} 
-      else 
-	{
-	  vfTDCA16Offset = laddr-a16addr;
-	  FASDCp = (struct vfTDC_sdc_struct *) laddr;
-	  if(!noBoardInit)
-	    vmeWrite16(&(FASDCp->ctrl),FASDC_CSR_INIT);   /* Reset the Module */
-
-	  if(nvfTDC>7) 
-	    {
-	      printf("WARN: A Single JLAB VFTDC Signal Distribution Module only supports 7 VFTDCs\n");
-	      printf("WARN: You must use multiple SDCs to support more VFTDCs - this must be configured in hardware\n");
-	    }
-#ifdef VXWORKS
-	  printf("Using JLAB VFTDC Signal Distribution Module at address 0x%x\n",
-		 (UINT32) FASDCp); 
-#else
-	  printf("Using JLAB VFTDC Signal Distribution Module at VME (Local) address 0x%x (0x%lx)\n",
-		 (UINT32)a16addr, (unsigned long) FASDCp); 
-#endif
-	  vfTDCUseSDC=1;
-	}
-      if(vfTDCSource == VFTDC_SOURCE_SDC) 
-	{  /* Check if SDC will be used */
-	  vfTDCUseSDC = 1;
-	  printf("%s: JLAB VFTDC Signal Distribution Card is Assumed in Use\n",
-		 __FUNCTION__);
-	  printf("%s: Front Panel Inputs will be enabled. \n",
-		 __FUNCTION__);
-	}
-      else
-	{
-	  vfTDCUseSDC = 0;
-	  printf("%s: JLAB VFTDC Signal Distribution Card will not be Used\n",
-		 __FUNCTION__);
-	}
-    }
-
+#ifdef NOTYET
   /* Hard Reset of all VFTDC boards in the Crate */
   if(!noBoardInit)
     {
       for(ii=0;ii<nvfTDC;ii++) 
 	{
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->reset),VFTDC_RESET_ALL);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_ALL);
 	}
       taskDelay(60); 
     }
+#endif /* NOTYET */
 
   /* Initialize Interrupt variables */
-  vfTDCIntID = -1;
   vfTDCIntRunning = FALSE;
   vfTDCIntLevel = VFTDC_VME_INT_LEVEL;
   vfTDCIntVec = VFTDC_VME_INT_VEC;
@@ -472,162 +357,96 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
     }
 #endif
 
+
+  /* Enable Clock, Trigger, and syncReset sources */ 
   if(!noBoardInit)
     {
-      /* what are the Trigger Sync Reset and Clock sources */
-      if (vfTDCSource == VFTDC_SOURCE_VXS)
+      
+      switch(clkSrc)
 	{
-	  printf("%s: Enabling VFTDC for VXS Clock ",__FUNCTION__);
-	  clkSrc  = VFTDC_REF_CLK_P0;
-	  switch (iFlag&0xf) 
-	    {
-	    case 0: case 1:
-	      printf("and Software Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_VME | VFTDC_ENABLE_SOFT_TRIG;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 2:
-	      printf("and Front Panel Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_FP_ISYNC;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 3:
-	      printf("and Front Panel Triggers (FP Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_FP_ISYNC;
-	      srSrc   = VFTDC_SRESET_FP_ISYNC;
-	      break;
-	    case 4: case 6:
-	      printf("and VXS Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_P0_ISYNC;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 5: case 7:
-	      printf("and VXS Triggers (VXS Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_P0_ISYNC;
-	      srSrc   = VFTDC_SRESET_P0_ISYNC;
-	      break;
-	    case 8: case 10: case 12: case 14:
-	      printf("and Internal Trigger Logic (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_INTERNAL;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 9: case 11: case 13: case 15:
-	      printf("and Internal Trigger Logic (VXS Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_INTERNAL;
-	      srSrc   = VFTDC_SRESET_FP_ISYNC;
-	      break;
-	    }
-	}
-      else if (vfTDCSource == VFTDC_SOURCE_SDC) 
-	{
-	  printf("%s: Enabling VFTDC for SDC Clock (Front Panel) ",__FUNCTION__);
-	  clkSrc  = VFTDC_REF_CLK_FP;
-	  switch (iFlag&0xf) 
-	    {
-	    case 0: case 1:
-	      printf("and Software Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_VME | VFTDC_ENABLE_SOFT_TRIG;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 2: case 4: case 6:
-	      printf("and Front Panel Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_FP_ISYNC;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 3: case 5: case 7:
-	      printf("and Front Panel Triggers (FP Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_FP_ISYNC;
-	      srSrc   = VFTDC_SRESET_FP_ISYNC;
-	      break;
-	    case 8: case 10: case 12: case 14:
-	      printf("and Internal Trigger Logic (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_INTERNAL;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 9: case 11: case 13: case 15:
-	      printf("and Internal Trigger Logic (Front Panel Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_INTERNAL;
-	      srSrc   = VFTDC_SRESET_FP_ISYNC;
-	      break;
-	    }
-	  faSDC_Config(0,0);
-	}
-      else 
-	{  /* Use internal Clk */
-	  printf("%s: Enabling VFTDC Internal Clock, ",__FUNCTION__);
-	  clkSrc = VFTDC_REF_CLK_INTERNAL;
-	  switch (iFlag&0xf) 
-	    {
-	    case 0: case 1:
-	      printf("and Software Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_VME | VFTDC_ENABLE_SOFT_TRIG;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET ;
-	      break;
-	    case 2:
-	      printf("and Front Panel Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_FP_ISYNC;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 3:
-	      printf("and Front Panel Triggers (FP Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_FP_ISYNC;
-	      srSrc   = VFTDC_SRESET_FP_ISYNC;
-	      break;
-	    case 4: case 6:
-	      printf("and VXS Triggers (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_P0_ISYNC;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 5: case 7:
-	      printf("and VXS Triggers (VXS Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_P0_ISYNC;
-	      srSrc   = VFTDC_SRESET_P0_ISYNC;
-	      break;
-	    case 8: case 10: case 12: case 14:
-	      printf("and Internal Trigger Logic (Soft Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_INTERNAL;
-	      srSrc   = VFTDC_SRESET_VME | VFTDC_ENABLE_SOFT_SRESET;
-	      break;
-	    case 9: case 11: case 13: case 15:
-	      printf("and Internal Trigger Logic (Front Panel Sync Reset)\n");
-	      trigSrc = VFTDC_TRIG_INTERNAL;
-	      srSrc   = VFTDC_SRESET_FP_ISYNC;
-	      break;
-	    }
-	}
-    }
+	case VFTDC_INIT_INT_CLKSRC:
+	  wreg = VFTDC_CLOCK_INTERNAL;
+	  break;
 
-  /* Enable Clock source - Internal Clk enabled by default */ 
-  if(!noBoardInit)
-    {
+	case VFTDC_INIT_HFBR1_CLKSRC:
+	  wreg = VFTDC_CLOCK_HFBR1;
+	  break;
+
+	case VFTDC_INIT_VXS_CLKSRC:
+	  wreg = VFTDC_CLOCK_VXS;
+	  break;
+
+	default:
+	  printf("%s: ERROR: Invalid Clock Source (%d). Setting internal.\n",
+		 __FUNCTION__,clkSrc);
+	  clkSrc = VFTDC_INIT_INT_CLKSRC;
+	  wreg = VFTDC_CLOCK_INTERNAL;
+	  break;
+	}
+
+
       for(ii=0;ii<nvfTDC;ii++) 
 	{
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->ctrl1),(clkSrc | VFTDC_ENABLE_INTERNAL_CLK)) ;
-	}
-      taskDelay(20);
-
-
-      /* Hard Reset FPGAs and FIFOs */
-      for(ii=0;ii<nvfTDC;ii++) 
-	{
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->reset),
-		     (VFTDC_RESET_ADC_FPGA1 | VFTDC_RESET_ADC_FIFO1 |
-		      VFTDC_RESET_DAC | VFTDC_RESET_EXT_RAM_PT));
-
-#ifdef CLAS12
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->gtx_ctrl),0x203); /*put reset*/
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->gtx_ctrl),0x800); /*release reset*/
-#else
-	  /* Release reset on MGTs */
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->mgt_ctrl),VFTDC_RELEASE_MGT_RESET);
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->mgt_ctrl),VFTDC_MGT_RESET);
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->mgt_ctrl),VFTDC_RELEASE_MGT_RESET);
-#endif
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->clock, wreg);
 	}
       taskDelay(5);
+
+      /* Setup Trigger and Sync Reset sources */
+      switch(trigSrc)
+	{
+	case VFTDC_INIT_SOFT_TRIG:
+	  wreg = VFTDC_TRIGSRC_VME;
+	  break;
+
+	case VFTDC_INIT_HFBR1_TRIG:
+	  wreg = VFTDC_TRIGSRC_HFBR1;
+	  break;
+
+	case VFTDC_INIT_VXS_TRIG:
+	  wreg = VFTDC_TRIGSRC_VXS;
+	  break;
+
+	default:
+	  printf("%s: ERROR: Invalid trigger source (%d). Using software.\n",
+		 __FUNCTION__,trigSrc);
+	  trigSrc= VFTDC_INIT_SOFT_TRIG;
+	  wreg = VFTDC_TRIGSRC_VME;
+	}
+
+      for(ii=0;ii<nvfTDC;ii++) 
+	{
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->trigsrc, wreg);
+	}
+
+      switch(srSrc)
+	{
+	case VFTDC_INIT_SOFT_SYNCRESET:
+	  wreg = VFTDC_SYNC_VME;
+	  break;
+
+	case VFTDC_INIT_HFBR1_SYNCRESET:
+	  wreg = VFTDC_SYNC_HFBR1;
+	  break;
+
+	case VFTDC_INIT_VXS_SYNCRESET:
+	  wreg = VFTDC_SYNC_VXS;
+	  break;
+
+	default:
+	  printf("%s: ERROR: Invalid syncReset source (%d). Using software\n",
+		 __FUNCTION__,srSrc);
+	  srSrc = VFTDC_INIT_SOFT_SYNCRESET;
+	  wreg = VFTDC_SYNC_VME;
+	}
+
+      for(ii=0;ii<nvfTDC;ii++) 
+	{
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->sync, wreg);
+	}
+
     }
 
-  /* Write configuration registers with default/defined Sources */
+  /* Write A32 configuration registers with default blocklevel */
   for(ii=0;ii<nvfTDC;ii++) 
     {
     
@@ -650,30 +469,18 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
 	  return(ERROR);
 	}
 #endif
-      FApd[vfTDCID[ii]] = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
+      TDCpd[vfTDCID[ii]] = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
       if(!noBoardInit)
 	{
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->adr32),(a32addr>>16) + 1);  /* Write the register and enable */
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->adr32,(a32addr>>16) + 1);  /* Write the register and enable */
 	
 	  /* Set Default Block Level to 1 */
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->blk_level),1);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->blocklevel,1);
 	}
-      vfTDCBlockLevel=1;
 
-      /* Setup Trigger and Sync Reset sources */
-      if(!noBoardInit)
-	{
-	  vmeWrite32(&(FAp[vfTDCID[ii]]->ctrl1),
-		     vmeRead32(&(FAp[vfTDCID[ii]]->ctrl1)) | 
-		     (srSrc | trigSrc) );
-	}
-#ifndef CLAS12      
-      /* Set default stop and busy conditions (modified in faSetProcMode(..)) */
-      faSetTriggerStopCondition(vfTDCID[ii], 9);
-      faSetTriggerBusyCondition(vfTDCID[ii], 9);
-#endif
     }
 
+#ifdef NOTYET
   /* If there are more than 1 VFTDC in the crate then setup the Muliblock Address
      window. This must be the same on each board in the crate */
   if(nvfTDC > 1) 
@@ -696,13 +503,13 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
 	  return(ERROR);
 	}
 #endif
-      FApmb = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
+      TDCpmb = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
       if(!noBoardInit)
 	{
 	  for (ii=0;ii<nvfTDC;ii++) 
 	    {
 	      /* Write the register and enable */
-	      vmeWrite32(&(FAp[vfTDCID[ii]]->adr_mb),
+	      vmeWrite32(&TDCp[vfTDCID[ii]]->adr_mb,
 			 (a32addr+VFTDC_MAX_A32MB_SIZE) + (a32addr>>16) + VFTDC_A32_ENABLE);
 	    }
 	}    
@@ -711,22 +518,20 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int nadc, int iFlag)
       vfTDCMinSlot = minSlot;
       if(!noBoardInit)
 	{
-	  vmeWrite32(&(FAp[minSlot]->ctrl1),
-		     vmeRead32(&(FAp[minSlot]->ctrl1)) | VFTDC_FIRST_BOARD);
-	  vmeWrite32(&(FAp[maxSlot]->ctrl1),
-		     vmeRead32(&(FAp[maxSlot]->ctrl1)) | VFTDC_LAST_BOARD);
+	  vmeWrite32(&TDCp[minSlot]->ctrl1,
+		     vmeRead32(&(TDCp[minSlot]->ctrl1)) | VFTDC_FIRST_BOARD);
+	  vmeWrite32(&TDCp[maxSlot]->ctrl1,
+		     vmeRead32(&(TDCp[maxSlot]->ctrl1)) | VFTDC_LAST_BOARD);
 	}    
     }
-
-  if(!noBoardInit)
-    vfTDCInited = nvfTDC;
+#endif /* NOTYET */
 
   if(errFlag > 0) 
     {
       printf("%s: WARN: Unable to initialize all requested VFTDC Modules (%d)\n",
-	     __FUNCTION__,nadc);
+	     __FUNCTION__,ntdc);
       if(nvfTDC > 0)
-	printf("%s: %d VFTDC(s) successfully initialized\n",FUNCTION__,nvfTDC );
+	printf("%s: %d VFTDC(s) successfully initialized\n",__FUNCTION__,nvfTDC );
       return(ERROR);
     } 
   else 
@@ -739,41 +544,70 @@ int
 vfTDCCheckAddresses()
 {
   unsigned long offset=0, expected=0, base=0;
-  
-  if(TDCp==NULL)
-    {
-      printf("%s: ERROR: VFTDC not initialized\n",__FUNCTION__);
-      return ERROR;
-    }
+  struct vfTDC_struct *tp;
+  int rval=OK;
 
-  printf("%s:\n\t ---------- Checking TI address space ---------- \n",__FUNCTION__);
+  printf("%s:\n\t ---------- Checking VFTDC address space ---------- \n",__FUNCTION__);
 
-  base = (unsigned long) &TDCp->boardID;
+  base = (unsigned long) &tp->boardID;
 
-  offset = ((unsigned long) &TDCp->trigsrc) - base;
+  offset = ((unsigned long) &tp->trigsrc) - base;
   expected = 0x20;
   if(offset != expected)
-    printf("%s: ERROR TDCp->triggerSource not at offset = 0x%lx (@ 0x%lx)\n",
-	   __FUNCTION__,expected,offset);
+    {
+      printf("%s: ERROR TDCp->trigSrc not at offset = 0x%lx (@ 0x%lx)\n",
+	     __FUNCTION__,expected,offset);
+      rval = ERROR;
+    }
 
+  offset = ((unsigned long) &tp->blockBuffer) - base;
+  expected = 0x4c;
+  if(offset != expected)
+    {
+      printf("%s: ERROR TDCp->blockBuffer not at offset = 0x%lx (@ 0x%lx)\n",
+	     __FUNCTION__,expected,offset);
+      rval = ERROR;
+    }
 
-  return OK;
+  offset = ((unsigned long) &tp->livetime) - base;
+  expected = 0xa8;
+  if(offset != expected)
+    {
+      printf("%s: ERROR TDCp->livetime not at offset = 0x%lx (@ 0x%lx)\n",
+	     __FUNCTION__,expected,offset);
+      rval = ERROR;
+    }
+
+  offset = ((unsigned long) &tp->reset) - base;
+  expected = 0x100;
+  if(offset != expected)
+    {
+      printf("%s: ERROR TDCp->reset not at offset = 0x%lx (@ 0x%lx)\n",
+	     __FUNCTION__,expected,offset);
+      rval = ERROR;
+    }
+
+  return rval;
 }
 
 /**
  * @ingroup Status
  * @brief Print some status information of the TI to standard out
  * 
+ * @param id Slot Number
  * @param pflag if pflag>0, print out raw registers
  *
  */
 
 void
-vfTDCStatus(int pflag)
+vfTDCStatus(int id, int pflag)
 {
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return;
     }
 
@@ -783,10 +617,10 @@ vfTDCStatus(int pflag)
   printf("\n");
 #ifdef VXWORKS
   printf("STATUS for vfTDC at base address 0x%08x \n",
-	 (unsigned int) TDCp);
+	 (unsigned int) TDCp[id]);
 #else
   printf("STATUS for vfTDC at VME (Local) base address 0x%08lx (0x%lx) \n",
-	 (unsigned long) TDCp - vfTDCA24Offset, (unsigned long) TDCp);
+	 (unsigned long) TDCp[id] - vfTDCA24Offset, (unsigned long) TDCp[id]);
 #endif
   printf("--------------------------------------------------------------------------------\n");
 
@@ -795,11 +629,12 @@ vfTDCStatus(int pflag)
 
 }
 
-
+#ifdef NOTYET
 /**
  * @ingroup Status
  * @brief Get the Firmware Version
  *
+ * @param id Slot Number
  * @return Firmware Version if successful, ERROR otherwise
  *
  */
@@ -807,9 +642,12 @@ int
 vfTDCGetFirmwareVersion()
 {
   unsigned int rval=0;
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -838,6 +676,7 @@ vfTDCGetFirmwareVersion()
  * @ingroup Status
  * @brief Get the Module Serial Number
  *
+ * @param id Slot Number
  * @param rSN  Pointer to string to pass Serial Number
  *
  * @return SerialNumber if successful, ERROR otherwise
@@ -851,9 +690,12 @@ vfTDCGetSerialNumber(char **rSN)
 
   memset(retSN,0,sizeof(retSN));
   
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -879,242 +721,119 @@ vfTDCGetSerialNumber(char **rSN)
   
 
 }
+#endif /* NOTYET */
 
 /**
  * @ingroup Config
  * @brief Perform a soft reset of the TI
  *
+ * @param id Slot Number
  * @return OK if successful, ERROR otherwise
  *
  */
 int
-vfTDCReset()
+vfTDCReset(int id)
 {
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
   
   VLOCK;
-  vmeWrite32(&TDCp->reset,VFTDC_RESET_SOFT);
+  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_SOFT);
   VUNLOCK;
   return OK;
 }
 
 /**
- * @ingroup MasterConfig
+ * @ingroup Config
  * @brief Set the number of events per block
+ * @param id Slot Number
  * @param blockLevel Number of events per block
  * @return OK if successful, ERROR otherwise
  *
  */
 int
-vfTDCSetBlockLevel(int blockLevel)
+vfTDCSetBlockLevel(int id, int blockLevel)
 {
-  return tiBroadcastNextBlockLevel(blockLevel);
-}
+  if(id==0) id=vfTDCID[0];
 
-/**
- * @ingroup Config
- * @brief Set the trigger source
- *     This routine will set a library variable to be set in the TI registers
- *     at a call to vfTDCIntEnable.  
- *
- *  @param trig - integer indicating the trigger source
- *         - 0: P0
- *         - 1: HFBR#1
- *         - 2: Front Panel (TRG)
- *         - 3: Front Panel TS Inputs
- *         - 4: TS (rev2) 
- *         - 5: Random
- *         - 6-9: TS Partition 1-4
- *         - 10: HFBR#5
- *         - 11: Pulser Trig 2 then Trig1 after specified delay 
- *
- * @return OK if successful, ERROR otherwise
- *
- */
-int
-vfTDCSetTriggerSource(int trig)
-{
-  unsigned int trigenable=0;
-
-  if(TDCp==NULL)
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
-  if( (trig>10) || (trig<0) )
+  if((blockLevel<1) || (blockLevel>255))
     {
-      printf("%s: ERROR: Invalid Trigger Source (%d).  Must be between 0 and 10.\n",
-	     __FUNCTION__,trig);
+      printf("%s: ERROR: Invalid blockLevel (%d)\n",
+	     __FUNCTION__,blockLevel);
       return ERROR;
     }
 
-
-  if(!tiMaster)
-    { 
-      /* Setup for TI Slave */
-      trigenable = VFTDC_TRIGSRC_VME;
-
-      if((trig>=6) && (trig<=9)) /* TS partition specified */
-	{
-	  if(tiSlaveFiberIn!=1)
-	    {
-	      printf("%s: WARN: Partition triggers NOT USED on Fiber Port 5.\n",
-		     __FUNCTION__);
-	      trigenable |= VFTDC_TRIGSRC_HFBR5;
-	    }
-
-	  trigenable |= VFTDC_TRIGSRC_HFBR1;
-	  switch(trig)
-	    {
-	    case VFTDC_TRIGGER_PART_1:
-	      trigenable |= VFTDC_TRIGSRC_PART_1;
-	      break;
-	  
-	    case VFTDC_TRIGGER_PART_2:
-	      trigenable |= VFTDC_TRIGSRC_PART_2;
-	      break;
-	  
-	    case VFTDC_TRIGGER_PART_3:
-	      trigenable |= VFTDC_TRIGSRC_PART_3;
-	      break;
-
-	    case VFTDC_TRIGGER_PART_4:
-	      trigenable |= VFTDC_TRIGSRC_PART_4;
-	      break;
-	    }
-	}
-      else
-	{
-	  if(tiSlaveFiberIn==1)
-	    {
-	      trigenable |= VFTDC_TRIGSRC_HFBR1;
-	    }
-	  else if(tiSlaveFiberIn==5)
-	    {
-	      trigenable |= VFTDC_TRIGSRC_HFBR5;
-	    }
-	  if( (trig != VFTDC_TRIGGER_HFBR1) || (trig != VFTDC_TRIGGER_HFBR5) )
-	    {
-	      printf("%s: WARN:  Only valid trigger source for TI Slave is HFBR%d (trig = %d)",
-		     __FUNCTION__, tiSlaveFiberIn,
-		     (tiSlaveFiberIn==1)?VFTDC_TRIGGER_HFBR1:VFTDC_TRIGGER_HFBR5);
-	      printf("  Ignoring specified trig (%d)\n",trig);
-	    }
-	}
-
-    }
-  else
-    {
-      /* Setup for TI Master */
-
-      /* Set VME and Loopback by default */
-      trigenable  = VFTDC_TRIGSRC_VME;
-      trigenable |= VFTDC_TRIGSRC_LOOPBACK;
-
-      switch(trig)
-	{
-	case VFTDC_TRIGGER_P0:
-	  trigenable |= VFTDC_TRIGSRC_P0;
-	  break;
-
-	case VFTDC_TRIGGER_HFBR1:
-	  trigenable |= VFTDC_TRIGSRC_HFBR1;
-	  break;
-
-	case VFTDC_TRIGGER_HFBR5:
-	  trigenable |= VFTDC_TRIGSRC_HFBR5;
-	  break;
-
-	case VFTDC_TRIGGER_FPTRG:
-	  trigenable |= VFTDC_TRIGSRC_FPTRG;
-	  break;
-
-	case VFTDC_TRIGGER_TSINPUTS:
-	  trigenable |= VFTDC_TRIGSRC_TSINPUTS;
-	  break;
-
-	case VFTDC_TRIGGER_TSREV2:
-	  trigenable |= VFTDC_TRIGSRC_TSREV2;
-	  break;
-
-	case VFTDC_TRIGGER_PULSER:
-	  trigenable |= VFTDC_TRIGSRC_PULSER;
-	  break;
-
-	case VFTDC_TRIGGER_TRIG21:
-	  trigenable |= VFTDC_TRIGSRC_PULSER;
-	  trigenable |= VFTDC_TRIGSRC_TRIG21;
-	  break;
-
-	default:
-	  printf("%s: ERROR: Invalid Trigger Source (%d) for TI Master\n",
-		 __FUNCTION__,trig);
-	  return ERROR;
-	}
-    }
-
-  tiTriggerSource = trigenable;
-  printf("%s: INFO: tiTriggerSource = 0x%x\n",__FUNCTION__,tiTriggerSource);
-
+  VLOCK;
+  vmeWrite32(&TDCp[id]->blocklevel,blockLevel);
+  VUNLOCK;
   return OK;
 }
 
 /**
  * @ingroup Config
  * @brief Set trigger sources with specified trigmask
- *    This routine is for special use when tiSetTriggerSource(...) does
- *    not set all of the trigger sources that is required by the user.
  *
+ * @param id Slot Number
  * @param trigmask bits:  
- *        -         0:  P0
- *        -         1:  HFBR #1 
- *        -         2:  TI Master Loopback
- *        -         3:  Front Panel (TRG) Input
- *        -         4:  VME Trigger
- *        -         5:  Front Panel TS Inputs
- *        -         6:  TS (rev 2) Input
- *        -         7:  Random Trigger
- *        -         8:  FP/Ext/GTP 
- *        -         9:  P2 Busy 
- *        -        10:  HFBR #5
- *        -        11:  Pulser Trig2 with delayed Trig1 (only compatible with 2 and 7)
+ *         - 0: VXS
+ *         - 1: HFBR#1
+ *         - 4: Software
  *
  * @return OK if successful, ERROR otherwise
  *
  */
 int
-vfTDCSetTriggerSourceMask(int trigmask)
+vfTDCSetTriggerSource(int id, unsigned int trigmask)
 {
-  if(TDCp==NULL)
+  unsigned int supported = 
+    VFTDC_TRIGSRC_VXS |
+    VFTDC_TRIGSRC_HFBR1 | 
+    VFTDC_TRIGSRC_VME;
+
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
-  /* Check input mask */
-  if(trigmask>VFTDC_TRIGSRC_SOURCEMASK)
+  if(trigmask & ~supported)
     {
-      printf("%s: ERROR: Invalid trigger source mask (0x%x).\n",
+      printf("%s: ERROR: Unsupported Trigger source mask (0x%x).\n",
 	     __FUNCTION__,trigmask);
       return ERROR;
     }
 
-  tiTriggerSource = trigmask;
+  VLOCK;
+  vmeWrite32(&TDCp[id]->trigsrc, trigmask);
+  VUNLOCK;
 
   return OK;
 }
 
+#ifdef NOTYET
 /**
  * @ingroup Config
  * @brief Enable trigger sources
  * Enable trigger sources set by 
  *                          tiSetTriggerSource(...) or
  *                          tiSetTriggerSourceMask(...)
+ * @param id Slot Number
  * @sa tiSetTriggerSource
  * @sa tiSetTriggerSourceMask
  *
@@ -1124,9 +843,12 @@ vfTDCSetTriggerSourceMask(int trigmask)
 int
 vfTDCEnableTriggerSource()
 {
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1147,6 +869,7 @@ vfTDCEnableTriggerSource()
  * @ingroup Config
  * @brief Disable trigger sources
  *    
+ * @param id Slot Number
  * @param fflag 
  *   -  0: Disable Triggers
  *   - >0: Disable Triggers and generate enough triggers to fill the current block
@@ -1158,9 +881,12 @@ int
 vfTDCDisableTriggerSource(int fflag)
 {
   int regset=0;
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1180,32 +906,40 @@ vfTDCDisableTriggerSource(int fflag)
   return OK;
 
 }
+#endif /* NOTYET */
 
 /**
  * @ingroup Config
  * @brief Set the Sync source mask
  *
+ * @param id Slot Number
  * @param sync - MASK indicating the sync source
  *       bit: description
- *       -  0: P0
+ *       -  0: VXS
  *       -  1: HFBR1
- *       -  2: HFBR5
- *       -  3: FP
- *       -  4: LOOPBACK
+ *       -  4: Software
  *
  * @return OK if successful, ERROR otherwise
  *
  */
 int
-vfTDCSetSyncSource(unsigned int sync)
+vfTDCSetSyncSource(int id, unsigned int sync)
 {
-  if(TDCp==NULL)
+  unsigned int supported = 
+    VFTDC_SYNC_VXS |
+    VFTDC_SYNC_HFBR1 | 
+    VFTDC_SYNC_VME;
+
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
-  if(sync>VFTDC_SYNC_SOURCEMASK)
+  if(sync & ~supported)
     {
       printf("%s: ERROR: Invalid Sync Source Mask (%d).\n",
 	     __FUNCTION__,sync);
@@ -1213,82 +947,35 @@ vfTDCSetSyncSource(unsigned int sync)
     }
 
   VLOCK;
-  vmeWrite32(&TDCp->sync,sync);
+  vmeWrite32(&TDCp[id]->sync,sync);
   VUNLOCK;
 
   return OK;
 }
 
 /**
- * @ingroup MasterConfig
- * @brief Set and enable the "software" trigger
+ * @ingroup Config
+ * @brief Perform a "software" trigger
  *
- *  @param trigger  trigger type 1 or 2 (playback trigger)
- *  @param nevents  integer number of events to trigger
- *  @param period_inc  period multiplier, depends on range (0-0x7FFF)
- *  @param range  
- *     - 0: small period range (min: 120ns, increments of 120ns)
- *     - 1: large period range (min: 120ns, increments of 245.7us)
+ * @param id Slot Number
  *
  * @return OK if successful, ERROR otherwise
  *
  */
 int
-vfTDCSoftTrig(int trigger, unsigned int nevents, unsigned int period_inc, int range)
+vfTDCSoftTrig(int id)
 {
-  unsigned int periodMax=(VFTDC_FIXEDPULSER1_PERIOD_MASK>>16);
-  unsigned int reg=0;
-  int time=0;
+  if(id==0) id=vfTDCID[0];
 
-  if(TDCp==NULL)
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      logMsg("\ntiSoftTrig: ERROR: TI not initialized\n",1,2,3,4,5,6);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
-  if(trigger!=1 && trigger!=2)
-    {
-      logMsg("\ntiSoftTrig: ERROR: Invalid trigger type %d\n",trigger,2,3,4,5,6);
-      return ERROR;
-    }
-
-  if(nevents>VFTDC_FIXEDPULSER1_NTRIGGERS_MASK)
-    {
-      logMsg("\ntiSoftTrig: ERROR: nevents (%d) must be less than %d\n",nevents,
-	     VFTDC_FIXEDPULSER1_NTRIGGERS_MASK,3,4,5,6);
-      return ERROR;
-    }
-  if(period_inc>periodMax)
-    {
-      logMsg("\ntiSoftTrig: ERROR: period_inc (%d) must be less than %d ns\n",
-	     period_inc,periodMax,3,4,5,6);
-      return ERROR;
-    }
-  if( (range!=0) && (range!=1) )
-    {
-      logMsg("\ntiSoftTrig: ERROR: range must be 0 or 1\n",
-	     periodMax,2,3,4,5,6);
-      return ERROR;
-    }
-
-  if(range==0)
-    time = 120+120*period_inc;
-  if(range==1)
-    time = 120+120*period_inc*2048;
-
-  logMsg("\ntiSoftTrig: INFO: Setting software trigger for %d nevents with period of %d\n",
-	 nevents,time,3,4,5,6);
-
-  reg = (range<<31)| (period_inc<<16) | (nevents);
   VLOCK;
-  if(trigger==1)
-    {
-      vmeWrite32(&TDCp->fixedPulser1, reg);
-    }
-  else if(trigger==2)
-    {
-      vmeWrite32(&TDCp->fixedPulser2, reg);
-    }
+  vmeWrite32(&TDCp[id]->reset, VFTDC_RESET_TRIGGER);
   VUNLOCK;
 
   return OK;
@@ -1299,6 +986,7 @@ vfTDCSoftTrig(int trigger, unsigned int nevents, unsigned int period_inc, int ra
  * @ingroup Readout
  * @brief Read a block of events from the TI
  *
+ * @param id Slot Number
  * @param   data  - local memory address to place data
  * @param   nwrds - Max number of words to transfer
  * @param   rflag - Readout Flag
@@ -1310,16 +998,19 @@ vfTDCSoftTrig(int trigger, unsigned int nevents, unsigned int period_inc, int ra
  *
  */
 int
-vfTDCReadBlock(volatile unsigned int *data, int nwrds, int rflag)
+vfTDCReadBlock(int id, volatile unsigned int *data, int nwrds, int rflag)
 {
   int ii, dummy=0;
   int dCnt, retVal, xferCount;
   volatile unsigned int *laddr;
   unsigned int vmeAdr, val;
 
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      logMsg("\ntiReadBlock: ERROR: TI not initialized\n",1,2,3,4,5,6);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1338,14 +1029,6 @@ vfTDCReadBlock(volatile unsigned int *data, int nwrds, int rflag)
   VLOCK;
   if(rflag >= 1)
     { /* Block transfer */
-      if(tiBusError==0)
-	{
-	  logMsg("tiReadBlock: WARN: Bus Error Block Termination was disabled.  Re-enabling\n",
-		 1,2,3,4,5,6);
-	  VUNLOCK;
-	  tiEnableBusError();
-	  VLOCK;
-	}
       /* Assume that the DMA programming is already setup. 
 	 Don't Bother checking if there is valid data - that should be done prior
 	 to calling the read routine */
@@ -1426,14 +1109,6 @@ vfTDCReadBlock(volatile unsigned int *data, int nwrds, int rflag)
     }
   else
     { /* Programmed IO */
-      if(tiBusError==1)
-	{
-	  logMsg("tiReadBlock: WARN: Bus Error Block Termination was enabled.  Disabling\n",
-		 1,2,3,4,5,6);
-	  VUNLOCK;
-	  tiDisableBusError();
-	  VLOCK;
-	}
 
       dCnt = 0;
       ii=0;
@@ -1485,6 +1160,7 @@ vfTDCReadBlock(volatile unsigned int *data, int nwrds, int rflag)
   return OK;
 }
 
+#ifdef NOTYET
 /**
  * @ingroup Config
  * @brief Enable Fiber transceiver
@@ -1493,6 +1169,7 @@ vfTDCReadBlock(volatile unsigned int *data, int nwrds, int rflag)
  *         (no harm, except for 1-2W power usage)
  *
  * @sa tiDisableFiber
+ * @param id Slot Number
  * @param   fiber: integer indicative of the transceiver to enable
  *
  *
@@ -1500,14 +1177,17 @@ vfTDCReadBlock(volatile unsigned int *data, int nwrds, int rflag)
  *
  */
 int
-vfTDCEnableFiber(unsigned int fiber)
+vfTDCEnableFiber(int id, unsigned int fiber)
 {
   unsigned int sval;
   unsigned int fiberbit;
 
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1536,6 +1216,7 @@ vfTDCEnableFiber(unsigned int fiber)
  *
  * @sa tiEnableFiber
  *
+ * @param id Slot Number
  * @param   fiber: integer indicative of the transceiver to disable
  *
  *
@@ -1543,14 +1224,17 @@ vfTDCEnableFiber(unsigned int fiber)
  *
  */
 int
-vfTDCDisableFiber(unsigned int fiber)
+vfTDCDisableFiber(int id, unsigned int fiber)
 {
   unsigned int rval;
   unsigned int fiberbit;
 
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1572,167 +1256,111 @@ vfTDCDisableFiber(unsigned int fiber)
   return rval;
   
 }
+#endif /* NOTYET */
 
-/**
- * @ingroup Config
- * @brief Set the busy source with a given sourcemask sourcemask bits: 
- *
- * @param sourcemask 
- *  - 0: SWA
- *  - 1: SWB
- *  - 2: P2
- *  - 3: FP-FTDC
- *  - 4: FP-FADC
- *  - 5: FP
- *  - 6: Unused
- *  - 7: Loopack
- *  - 8-15: Fiber 1-8
- *
- * @param rFlag - decision to reset the global source flags
- *       -      0: Keep prior busy source settings and set new "sourcemask"
- *       -      1: Reset, using only that specified with "sourcemask"
- * @return OK if successful, ERROR otherwise.
- */
-int
-vfTDCSetBusySource(unsigned int sourcemask, int rFlag)
-{
-  unsigned int busybits=0;
-
-  if(TDCp==NULL)
-    {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return ERROR;
-    }
-  
-  if(sourcemask>VFTDC_BUSY_SOURCEMASK)
-    {
-      printf("%s: ERROR: Invalid value for sourcemask (0x%x)\n",
-	     __FUNCTION__, sourcemask);
-      return ERROR;
-    }
-
-  VLOCK;
-  if(rFlag)
-    {
-      /* Read in the previous value , resetting previous BUSYs*/
-      busybits = vmeRead32(&TDCp->busy) & ~(VFTDC_BUSY_SOURCEMASK);
-    }
-  else
-    {
-      /* Read in the previous value , keeping previous BUSYs*/
-      busybits = vmeRead32(&TDCp->busy);
-    }
-
-  busybits |= sourcemask;
-
-  vmeWrite32(&TDCp->busy, busybits);
-  VUNLOCK;
-
-  return OK;
-
-}
 
 /**
  * @ingroup Config
  * @brief Enable Bus Errors to terminate Block Reads
+ * @param id Slot Number
  * @sa tiDisableBusError
  * @return OK if successful, otherwise ERROR
  */
-void
-vfTDCEnableBusError()
+int
+vfTDCEnableBusError(int id)
 {
 
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return;
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
 
   VLOCK;
-  vmeWrite32(&TDCp->vmeControl,
-	   vmeRead32(&TDCp->vmeControl) | (VFTDC_VMECONTROL_BERR) );
-  tiBusError=1;
+  vmeWrite32(&TDCp[id]->vmeControl,
+	   vmeRead32(&TDCp[id]->vmeControl) | (VFTDC_VMECONTROL_BERR) );
   VUNLOCK;
-
+  return OK;
 }
 
 /**
  * @ingroup Config
  * @brief Disable Bus Errors to terminate Block Reads
+ * @param id Slot Number
  * @sa tiEnableBusError
  * @return OK if successful, otherwise ERROR
  */
-void
-vfTDCDisableBusError()
+int
+vfTDCDisableBusError(int id)
 {
 
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return;
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
 
   VLOCK;
-  vmeWrite32(&TDCp->vmeControl,
-	   vmeRead32(&TDCp->vmeControl) & ~(VFTDC_VMECONTROL_BERR) );
-  tiBusError=0;
+  vmeWrite32(&TDCp[id]->vmeControl,
+	   vmeRead32(&TDCp[id]->vmeControl) & ~(VFTDC_VMECONTROL_BERR) );
   VUNLOCK;
-
+  return OK;
 }
 
 
 /**
- * @ingroup MasterConfig
- * @brief Generate a Sync Reset signal.  This signal is sent to the loopback and
- *    all configured TI Slaves.
+ * @ingroup Config
+ * @brief Generate a software SyncReset signal.
  *
- *  @param blflag Option to change block level, after SyncReset issued
- *       -   0: Do not change block level
- *       -  >0: Broadcast block level to all connected slaves (including self)
- *            BlockLevel broadcasted will be set to library value
- *            (Set with tiSetBlockLevel)
+ *  @param id Slot Number
  *
+ * @return OK if successful, otherwise ERROR
  */
-void
-vfTDCSyncReset(int blflag)
+int
+vfTDCSyncReset(int id)
 {
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return;
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
   
   VLOCK;
-  vmeWrite32(&TDCp->syncCommand,tiSyncResetType); 
-  taskDelay(1);
-  vmeWrite32(&TDCp->syncCommand,VFTDC_SYNCCOMMAND_RESET_EVNUM); 
+  vmeWrite32(&TDCp[id]->reset, VFTDC_RESET_SYNCRESET); 
   taskDelay(1);
   VUNLOCK;
   
-  if(blflag) /* Set the block level from "Next" to Current */
-    {
-      printf("%s: INFO: Setting Block Level to %d\n",
-	     __FUNCTION__,tiNextBlockLevel);
-      tiBroadcastNextBlockLevel(tiNextBlockLevel);
-    }
-
+  return OK;
 }
 
 /**
  * @ingroup Config
  * @brief Routine to set the A32 Base
  *
+ * @param id Slot Number
  * @return OK if successful, otherwise ERROR
  */
 int
-vfTDCSetAdr32(unsigned int a32base)
+vfTDCSetAdr32(int id, unsigned int a32base)
 {
   unsigned long laddr=0;
   int res=0,a32Enabled=0;
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1744,13 +1372,13 @@ vfTDCSetAdr32(unsigned int a32base)
     }
 
   VLOCK;
-  vmeWrite32(&TDCp->adr32, 
+  vmeWrite32(&TDCp[id]->adr32, 
 	     (a32base & VFTDC_ADR32_BASE_MASK) );
 
-  vmeWrite32(&TDCp->vmeControl, 
-	     vmeRead32(&TDCp->vmeControl) | VFTDC_VMECONTROL_A32);
+  vmeWrite32(&TDCp[id]->vmeControl, 
+	     vmeRead32(&TDCp[id]->vmeControl) | VFTDC_VMECONTROL_A32);
 
-  a32Enabled = vmeRead32(&TDCp->vmeControl)&(VFTDC_VMECONTROL_A32);
+  a32Enabled = vmeRead32(&TDCp[id]->vmeControl)&(VFTDC_VMECONTROL_A32);
   if(!a32Enabled)
     {
       printf("%s: ERROR: Failed to enable A32 Address\n",__FUNCTION__);
@@ -1780,7 +1408,7 @@ vfTDCSetAdr32(unsigned int a32base)
 
   vfTDCA32Base = a32base;
   vfTDCA32Offset = laddr - vfTDCA32Base;
-  TDCpd = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
+  TDCpd[id] = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
   VUNLOCK;
 
   printf("%s: A32 Base address set to 0x%08x\n",
@@ -1793,21 +1421,25 @@ vfTDCSetAdr32(unsigned int a32base)
  * @ingroup Config
  * @brief Disable A32
  *
+ * @param id Slot Number
  * @return OK if successful, otherwise ERROR
  */
 int
-vfTDCDisableA32()
+vfTDCDisableA32(int id)
 {
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
   
   VLOCK;
-  vmeWrite32(&TDCp->adr32,0x0);
-  vmeWrite32(&TDCp->vmeControl, 
-	     vmeRead32(&TDCp->vmeControl) & ~VFTDC_VMECONTROL_A32);
+  vmeWrite32(&TDCp[id]->adr32,0x0);
+  vmeWrite32(&TDCp[id]->vmeControl, 
+	     vmeRead32(&TDCp[id]->vmeControl) & ~VFTDC_VMECONTROL_A32);
   VUNLOCK;
 
   return OK;
@@ -1817,19 +1449,23 @@ vfTDCDisableA32()
  * @ingroup Config
  * @brief Reset the L1A counter, as incremented by the TI.
  *
+ * @param id Slot Number
  * @return OK if successful, otherwise ERROR
  */
 int
-vfTDCResetEventCounter()
+vfTDCResetEventCounter(int id)
 {
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
   
   VLOCK;
-  vmeWrite32(&TDCp->reset, VFTDC_RESET_SCALERS_RESET);
+  vmeWrite32(&TDCp[id]->reset, VFTDC_RESET_SCALERS_RESET);
   VUNLOCK;
 
   return OK;
@@ -1839,23 +1475,27 @@ vfTDCResetEventCounter()
  * @ingroup Status
  * @brief Returns the event counter (48 bit)
  *
+ * @param id Slot Number
  * @return Number of accepted events if successful, otherwise ERROR
  */
 unsigned long long int
-vfTDCGetEventCounter()
+vfTDCGetEventCounter(int id)
 {
   unsigned long long int rval=0;
   unsigned int lo=0, hi=0;
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
   VLOCK;
-  lo = vmeRead32(&TDCp->eventNumber_lo);
-  hi = (vmeRead32(&TDCp->eventNumber_hi) & VFTDC_EVENTNUMBER_HI_MASK)>>16;
+  lo = vmeRead32(&TDCp[id]->eventNumber_lo);
+  hi = (vmeRead32(&TDCp[id]->eventNumber_hi) & VFTDC_EVENTNUMBER_HI_MASK)>>16;
 
   rval = lo | ((unsigned long long)hi<<32);
   VUNLOCK;
@@ -1868,32 +1508,27 @@ vfTDCGetEventCounter()
  * @ingroup Readout
  * @brief Returns the number of Blocks available for readout
  *
+ * @param id Slot Number
  * @return Number of blocks available for readout if successful, otherwise ERROR
  *
  */
 unsigned int
-vfTDCBReady()
+vfTDCBReady(int id)
 {
-  unsigned int blockBuffer=0, readyInt=0, rval=0;
+  unsigned int blockBuffer=0, rval=0;
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      logMsg("vfTDCBReady: ERROR: vfTDC not initialized\n",1,2,3,4,5,6);
-      return 0;
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
 
   VLOCK;
-  blockBuffer = vmeRead32(&TDCp->blockBuffer);
+  blockBuffer = vmeRead32(&TDCp[id]->blockBuffer);
   rval        = (blockBuffer&VFTDC_BLOCKBUFFER_BLOCKS_READY_MASK)>>8;
-  readyInt    = (blockBuffer&VFTDC_BLOCKBUFFER_BREADY_INT_MASK)>>24;
-  tiSyncEventReceived = (blockBuffer&VFTDC_BLOCKBUFFER_SYNCEVENT)>>31;
-  tiNReadoutEvents = (blockBuffer&VFTDC_BLOCKBUFFER_RO_NEVENTS_MASK)>>24;
-
-  if( (readyInt==1) && (tiSyncEventReceived) )
-    tiSyncEventFlag = 1;
-  else
-    tiSyncEventFlag = 0;
-
   VUNLOCK;
 
   return rval;
@@ -1903,6 +1538,7 @@ vfTDCBReady()
  * @ingroup Config
  * @brief Set the clock to the specified source.
  *
+ * @param id Slot Number
  * @param   source
  *         -   0:  Onboard clock
  *         -   1:  External clock (HFBR1 input)
@@ -1911,16 +1547,19 @@ vfTDCBReady()
  * @return OK if successful, otherwise ERROR
  */
 int
-vfTDCSetClockSource(unsigned int source)
+vfTDCSetClockSource(int id, unsigned int source)
 {
   int rval=OK;
   unsigned int clkset=0;
   unsigned int clkread=0;
   char sClock[20] = "";
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -1947,26 +1586,26 @@ vfTDCSetClockSource(unsigned int source)
 
 
   VLOCK;
-  vmeWrite32(&TDCp->clock, clkset);
+  vmeWrite32(&TDCp[id]->clock, clkset);
   /* Reset DCM (Digital Clock Manager) - 250/200MHz */
-  vmeWrite32(&TDCp->reset,VFTDC_RESET_CLK250);
+  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_CLK250);
   taskDelay(1);
   /* Reset DCM (Digital Clock Manager) - 125MHz */
-  vmeWrite32(&TDCp->reset,VFTDC_RESET_CLK125);
+  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_CLK125);
   taskDelay(1);
 
   if(source==1) /* Turn on running mode for External Clock verification */
     {
-      vmeWrite32(&TDCp->runningMode,VFTDC_RUNNINGMODE_ENABLE);
+      vmeWrite32(&TDCp[id]->runningMode,VFTDC_RUNNINGMODE_ENABLE);
       taskDelay(1);
-      clkread = vmeRead32(&TDCp->clock) & VFTDC_CLOCK_MASK;
+      clkread = vmeRead32(&TDCp[id]->clock) & VFTDC_CLOCK_MASK;
       if(clkread != clkset)
 	{
 	  printf("%s: ERROR Setting Clock Source (clkset = 0x%x, clkread = 0x%x)\n",
 		 __FUNCTION__,clkset, clkread);
 	  rval = ERROR;
 	}
-      vmeWrite32(&TDCp->runningMode,VFTDC_RUNNINGMODE_DISABLE);
+      vmeWrite32(&TDCp[id]->runningMode,VFTDC_RUNNINGMODE_DISABLE);
     }
   VUNLOCK;
 
@@ -1976,20 +1615,24 @@ vfTDCSetClockSource(unsigned int source)
 /**
  * @ingroup Status
  * @brief Get the current clock source
+ * @param id Slot Number
  * @return Current Clock Source
  */
 int
-vfTDCGetClockSource()
+vfTDCGetClockSource(int id)
 {
   int rval=0;
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
   VLOCK;
-  rval = vmeRead32(&TDCp->clock) & 0x3;
+  rval = vmeRead32(&TDCp[id]->clock) & VFTDC_CLOCK_MASK;
   VUNLOCK;
 
   return rval;
@@ -1998,26 +1641,31 @@ vfTDCGetClockSource()
 /**
  * @ingroup Status
  * @brief Return geographic address as provided from a VME-64X crate.
- * @return Geographic Address if successful, otherwise ERROR.  0 would indicate that the TI is not in a VME-64X crate.
+ * @param id Slot Number
+ * @return Geographic Address if successful, otherwise ERROR.
  */
 
 int
-vfTDCGetGeoAddress()
+vfTDCGetGeoAddress(int id)
 {
   int rval=0;
-  if(TDCp==NULL)
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
   VLOCK;
-  rval = (vmeRead32(&TDCp->adr24) & VFTDC_ADR24_GEOADDR_MASK)>>10;
+  rval = (vmeRead32(&TDCp[id]->boardID) & VFTDC_BOARDID_GEOADR_MASK)>>8;
   VUNLOCK;
 
   return rval;
 }
 
+#ifdef NOTYET
 /*************************************************************
  Library Interrupt/Polling routines
 *************************************************************/
@@ -2203,10 +1851,13 @@ vfTDCIntConnect(unsigned int vector, VOIDFUNCPTR routine, unsigned int arg)
   int status;
 #endif
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return(ERROR);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
 
 
@@ -2295,9 +1946,12 @@ vfTDCIntDisconnect()
   void *res;
 #endif
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
       return ERROR;
     }
 
@@ -2396,10 +2050,14 @@ void
 vfTDCIntAck()
 {
   int resetbits=0;
-  if(TDCp == NULL) {
-    logMsg("vfTDCIntAck: ERROR: vfTDC not initialized\n",0,0,0,0,0,0);
-    return;
-  }
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
+    {
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
+    }
 
   if (vfTDCAckRoutine != NULL)
     {
@@ -2443,10 +2101,13 @@ vfTDCIntEnable(int iflag)
   int lock_key=0;
 #endif
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return(-1);
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
 
   VLOCK;
@@ -2517,10 +2178,13 @@ void
 vfTDCIntDisable()
 {
 
-  if(TDCp == NULL) 
+  if(id==0) id=vfTDCID[0];
+
+  if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
     {
-      printf("%s: ERROR: vfTDC not initialized\n",__FUNCTION__);
-      return;
+      printf("%s: ERROR : TDC in slot %d is not initialized \n",
+	     __FUNCTION__,id);
+      return ERROR;
     }
 
   vfTDCDisableTriggerSource(1);
@@ -2564,5 +2228,4 @@ vfTDCGetAckCount()
 
   return(rval);
 }
-
-
+#endif /* NOTYET */
