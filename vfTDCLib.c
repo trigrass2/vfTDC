@@ -391,6 +391,13 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
       for(ii=0;ii<nvfTDC;ii++) 
 	{
 	  vmeWrite32(&TDCp[vfTDCID[ii]]->clock, wreg);
+	  taskDelay(1);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_CLK250);
+	  taskDelay(1);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_IODELAY);
+	  taskDelay(1);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_SOFT);
+	  taskDelay(1);
 	}
       taskDelay(5);
 
@@ -1744,6 +1751,12 @@ vfTDCSetClockSource(int id, unsigned int source)
 
   VLOCK;
   vmeWrite32(&TDCp[id]->clock, source);
+  taskDelay(1);
+
+    // Resets
+  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_CLK250);
+  taskDelay(1);
+  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_IODELAY);
   taskDelay(1);
 
   if(source==1) /* Turn on running mode for External Clock verification */

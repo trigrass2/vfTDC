@@ -268,7 +268,29 @@ struct vftdc_data_struct
 };
 
 /* Function prototypes */
-
+STATUS vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag);
+int  vfTDCCheckAddresses();
+void vfTDCStatus(int id, int pflag);
+int  vfTDCReset(int id);
+int  vfTDCSetBlockLevel(int id, int blockLevel);
+int  vfTDCSetTriggerSource(int id, unsigned int trigmask);
+int  vfTDCSetSyncSource(int id, unsigned int sync);
+int  vfTDCSoftTrig(int id);
+int  vfTDCSetWindowParamters(int id, int latency, int width);
+int  vfTDCReadBlockStatus(int pflag);
+int  vfTDCReadBlock(int id, volatile UINT32 *data, int nwrds, int rflag);
+int  vfTDCEnableBusError(int id);
+int  vfTDCDisableBusError(int id);
+int  vfTDCSyncReset(int id);
+int  vfTDCSetAdr32(int id, unsigned int a32base);
+int  vfTDCDisableA32(int id);
+int  vfTDCResetEventCounter(int id);
+unsigned long long int vfTDCGetEventCounter(int id);
+unsigned int vfTDCBReady(int id);
+int  vfTDCSetClockSource(int id, unsigned int source);
+int  vfTDCGetClockSource(int id);
+int  vfTDCGetGeoAddress(int id);
+void vfTDCDataDecode(unsigned int data);
 
 
 #endif /* VFTDCLIB_H */
