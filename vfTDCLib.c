@@ -2424,25 +2424,14 @@ vfTDCDataDecode(unsigned int data)
   switch( vftdc_data.type )
     {
     case 0:		/* BLOCK HEADER */
-      if( vftdc_data.new_type )
-	{
-	  vftdc_data.slot_id_hd = ((data) & 0x7C00000) >> 22;
-	  vftdc_data.modID      = (data & 0x3C0000)>>18;
-	  vftdc_data.blk_num    = (data & 0x3FF00) >> 8;
-	  vftdc_data.n_evts     = (data & 0xFF);
-	  if( i_print ) 
-	    printf("%8X - BLOCK HEADER - slot = %d  modID = %d   n_evts = %d   n_blk = %d\n",
-		   data, vftdc_data.slot_id_hd, 
-		   vftdc_data.modID, vftdc_data.n_evts, vftdc_data.blk_num);
-	}
-      else
-	{
-	  vftdc_data.PL  = (data & 0x1FFC0000) >> 18;
-
-	  printf("%8X - BLOCK HEADER 2 - PL = %d\n",
-		 data, 
-		 vftdc_data.PL);
-	}
+      vftdc_data.slot_id_hd = ((data) & 0x7C00000) >> 22;
+      vftdc_data.modID      = (data & 0x3C0000)>>18;
+      vftdc_data.blk_num    = (data & 0x3FF00) >> 8;
+      vftdc_data.n_evts     = (data & 0xFF);
+      if( i_print ) 
+	printf("%8X - BLOCK HEADER - slot = %d  modID = %d   n_evts = %d   n_blk = %d\n",
+	       data, vftdc_data.slot_id_hd, 
+	       vftdc_data.modID, vftdc_data.n_evts, vftdc_data.blk_num);
       break;
 
     case 1:		/* BLOCK TRAILER */
@@ -2457,7 +2446,7 @@ vfTDCDataDecode(unsigned int data)
       vftdc_data.slot_id_evh = (data & 0x7C00000) >> 22;
       vftdc_data.evt_num_1 = (data & 0x3FFFFF);
       if( i_print ) 
-	printf("%8X - EVENT HEADER 1 - slot = %d   evt_num = %d\n", data, 
+	printf("%8X - EVENT HEADER - slot = %d   evt_num = %d\n", data, 
 	       vftdc_data.slot_id_evh, vftdc_data.evt_num_1);
       break;
 
@@ -2479,20 +2468,6 @@ vfTDCDataDecode(unsigned int data)
 		printf("%8X - TRIGGER TIME 2 - time = %08x\n", data, vftdc_data.time_2);
 	      vftdc_data.time_now = 2;
 	    }    
-	  else if( time_last == 2 )
-	    {
-	      vftdc_data.time_3 = (data & 0xFFFFFF);
-	      if( i_print ) 
-		printf("%8X - TRIGGER TIME 3 - time = %08x\n", data, vftdc_data.time_3);
-	      vftdc_data.time_now = 3;
-	    }    
-	  else if( time_last == 3 )
-	    {
-	      vftdc_data.time_4 = (data & 0xFFFFFF);
-	      if( i_print ) 
-		printf("%8X - TRIGGER TIME 4 - time = %08x\n", data, vftdc_data.time_4);
-	      vftdc_data.time_now = 4;
-	    }    
 	  else
 	    if( i_print ) 
 	      printf("%8X - TRIGGER TIME - (ERROR)\n", data);
@@ -2501,34 +2476,37 @@ vfTDCDataDecode(unsigned int data)
 	}    
       break;
 
-    case 4:
-      break;
- 
-    case 5:
-      break;
-
-    case 6:
-      break; 
-
     case 7:
+      vftdc_data.group        = (data & 0x07000000)>>24;
+      vftdc_data.chan         = (data & 0x00f80000)>>19;
+      vftdc_data.edge_type    = (data & 0x00040000)>>18;
+      vftdc_data.time_coarse  = (data & 0x0003ff00)>>8;
+      vftdc_data.two_ns       = (data & 0x00000080)>>7;
+      vftdc_data.time_fine    = (data & 0x0000007f)>>0;
+
+      printf("%8X - TDC - grp = %d  ch = %2d  edge = %d  coarse = %4d  2ns = %d  fine time = %3d\n", 
+	     data, 
+	     vftdc_data.group,
+	     vftdc_data.chan,
+	     vftdc_data.edge_type,
+	     vftdc_data.time_coarse,
+	     vftdc_data.two_ns,
+	     vftdc_data.time_fine);
       break;
  
+    case 4:
+    case 5:
+    case 6:
     case 8:
-      break;
-
-    case 9:		/* UNDEFINED TYPE */
-    case 10:		/* UNDEFINED TYPE */
-    case 11:		/* UNDEFINED TYPE */
+    case 9:
+    case 10:
+    case 11:
     case 12:		/* UNDEFINED TYPE */
+    case 13:
       if( i_print ) 
 	printf("%8X - UNDEFINED TYPE = %d\n", data, vftdc_data.type);
       break;
  
-    case 13:		/* END OF EVENT */
-      if( i_print ) 
-	printf("%8X - END OF EVENT = %d\n", data, vftdc_data.type);
-      break;
-
     case 14:		/* DATA NOT VALID (no data available) */
       if( i_print ) 
 	printf("%8X - DATA NOT VALID = %d\n", data, vftdc_data.type);
