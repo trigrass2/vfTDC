@@ -178,8 +178,8 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 
   /* Determine clock, sync, and trigger sources */
   srSrc   = (iFlag&VFTDC_INIT_SYNCRESETSRC_MASK);
-  trigSrc = (iFlag&VFTDC_INIT_TRIGSRC_MASK)>>1;
-  clkSrc  = (iFlag&VFTDC_INIT_CLKSRC_MASK)>>4;
+  trigSrc = (iFlag&VFTDC_INIT_TRIGSRC_MASK);
+  clkSrc  = (iFlag&VFTDC_INIT_CLKSRC_MASK);
 
   /* Check for valid address */
   if(addr==0) 
@@ -307,7 +307,7 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 	      
 	      printf("Initialized VFTDC %2d  Slot #%2d at VME (Local) address 0x%06x (0x%lx) \n",
 		     nvfTDC,vfTDCID[nvfTDC],
-		     (UINT32) (unsigned long)(TDCp[(vfTDCID[nvfTDC])]-vfTDCA24Offset),
+		     (UINT32) ((unsigned long)(TDCp[(vfTDCID[nvfTDC])])-vfTDCA24Offset),
 		     (unsigned long) TDCp[(vfTDCID[nvfTDC])]);
 	    }
 	  nvfTDC++;
@@ -418,7 +418,7 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 
 	default:
 	  printf("%s: ERROR: Invalid trigger source (%d). Using software.\n",
-		 __FUNCTION__,trigSrc);
+		 __FUNCTION__,trigSrc>>2);
 	  trigSrc= VFTDC_INIT_SOFT_TRIG;
 	  wreg = VFTDC_TRIGSRC_VME;
 	}
@@ -444,7 +444,7 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 
 	default:
 	  printf("%s: ERROR: Invalid syncReset source (%d). Using software\n",
-		 __FUNCTION__,srSrc);
+		 __FUNCTION__,srSrc>>5);
 	  srSrc = VFTDC_INIT_SOFT_SYNCRESET;
 	  wreg = VFTDC_SYNC_VME;
 	}
@@ -612,6 +612,8 @@ vfTDCCheckAddresses()
 void
 vfTDCStatus(int id, int pflag)
 {
+  struct vfTDC_struct vr;
+
   if(id==0) id=vfTDCID[0];
 
   if((id<=0) || (id>21) || (TDCp[id] == NULL)) 
@@ -622,6 +624,29 @@ vfTDCStatus(int id, int pflag)
     }
 
   VLOCK;
+  vr.boardID        = vmeRead32(&TDCp[id]->boardID);
+  vr.ptw            = vmeRead32(&TDCp[id]->ptw);
+  vr.intsetup       = vmeRead32(&TDCp[id]->intsetup);
+  vr.pl             = vmeRead32(&TDCp[id]->pl);
+  vr.adr32          = vmeRead32(&TDCp[id]->adr32);
+  vr.blocklevel     = vmeRead32(&TDCp[id]->blocklevel);
+  vr.vmeControl     = vmeRead32(&TDCp[id]->vmeControl);
+  vr.trigsrc        = vmeRead32(&TDCp[id]->trigsrc);
+  vr.sync           = vmeRead32(&TDCp[id]->sync);
+  vr.busy           = vmeRead32(&TDCp[id]->busy);
+  vr.clock          = vmeRead32(&TDCp[id]->clock);
+  vr.blockBuffer    = vmeRead32(&TDCp[id]->blockBuffer);
+  vr.runningMode    = vmeRead32(&TDCp[id]->runningMode);
+  vr.livetime       = vmeRead32(&TDCp[id]->livetime);
+  vr.busytime       = vmeRead32(&TDCp[id]->busytime);
+  vr.eventNumber_hi = vmeRead32(&TDCp[id]->eventNumber_hi);
+  vr.eventNumber_lo = vmeRead32(&TDCp[id]->eventNumber_lo);
+
+  vr.trig1_scaler   = vmeRead32(&TDCp[id]->trig1_scaler);
+  vr.trig2_scaler   = vmeRead32(&TDCp[id]->trig2_scaler);
+  vr.sync_scaler    = vmeRead32(&TDCp[id]->sync_scaler);
+  vr.berr_scaler    = vmeRead32(&TDCp[id]->berr_scaler);
+
   VUNLOCK;
 
   printf("\n");
@@ -633,6 +658,104 @@ vfTDCStatus(int id, int pflag)
 	 (unsigned long) TDCp[id] - vfTDCA24Offset, (unsigned long) TDCp[id]);
 #endif
   printf("--------------------------------------------------------------------------------\n");
+
+#ifdef NOTYET
+  printf(" Board Firmware Rev/ID = 0x%04x : ADC Processing Rev = 0x%04x\n",
+	 (vers)&0xffff, tdc_version);
+#endif
+
+  if(vr.vmeControl&VFTDC_VMECONTROL_A32M) 
+    {
+      printf(" Alternate VME Addressing: Multiblock Enabled\n");
+      if(vr.vmeControl&VFTDC_VMECONTROL_A32)
+	printf("   A32 Enabled at VME (Local) base 0x%08x (0x%lx)\n",
+	       vr.adr32&VFTDC_ADR32_BASE_MASK,(unsigned long) TDCpd[id]);
+      else
+	printf("   A32 Disabled\n");
+    
+      printf("   Multiblock VME Address Range 0x%08x - 0x%08x\n",
+	     (vr.adr32&VFTDC_ADR32_MBLK_ADDR_MIN_MASK)<<10,
+	     (vr.adr32&VFTDC_ADR32_MBLK_ADDR_MAX_MASK)<<22);
+    }
+  else
+    {
+      printf(" Alternate VME Addressing: Multiblock Disabled\n");
+      if(vr.vmeControl&VFTDC_VMECONTROL_A32)
+	printf("   A32 Enabled at VME (Local) base 0x%08x (0x%lx)\n",
+	       vr.adr32&VFTDC_ADR32_BASE_MASK,(unsigned long) TDCpd[id]);
+      else
+	printf("   A32 Disabled\n");
+    }
+
+  if(vr.intsetup&VFTDC_INTSETUP_ENABLE) 
+    {
+      printf("\n");
+      printf("  Interrupts ENABLED:\n");
+    
+      printf("  VME INT Vector = 0x%x  Level = %d\n",
+	     (vr.intsetup&VFTDC_INTSETUP_VECTOR_MASK),
+	     (vr.intsetup&VFTDC_INTSETUP_LEVEL_MASK)>>8);
+    }
+
+  printf("\n");
+  printf(" Signal Sources: \n");
+
+  if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_INTERNAL) 
+    {
+      printf("   Ref Clock : Internal\n");
+    }
+  else if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_VXS) 
+    {
+      printf("   Ref Clock : VXS\n");
+    }
+  else if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_HFBR1) 
+    {
+      printf("   Ref Clock : Fiber 1\n");
+    }
+  else
+    {
+      printf("   Ref Clock : Undefined (%d)\n",
+	     (vr.clock&VFTDC_CLOCK_MASK));
+    }
+
+  printf("   Trig Src  : \n");
+  if(vr.trigsrc & VFTDC_TRIGSRC_VXS)
+    printf("               VXS\n");
+  if(vr.trigsrc & VFTDC_TRIGSRC_HFBR1)
+    printf("               Fiber 1\n");
+  if(vr.trigsrc & VFTDC_TRIGSRC_FP)
+    printf("               Front Panel\n");
+  if(vr.trigsrc & VFTDC_TRIGSRC_VME)
+    printf("               VME (Software)\n");
+  
+  printf("   Sync Reset: \n");
+  if(vr.sync & VFTDC_SYNC_VXS)
+    printf("               VXS\n");
+  if(vr.sync & VFTDC_SYNC_HFBR1)
+    printf("               Fiber 1\n");
+  if(vr.sync & VFTDC_SYNC_FP)
+    printf("               Front Panel\n");
+  if(vr.sync & VFTDC_SYNC_VME)
+    printf("               VME (Software)\n");
+
+  if(vr.vmeControl&VFTDC_VMECONTROL_MBLK) 
+    {
+      if(vr.vmeControl&VFTDC_VMECONTROL_FIRST_BOARD)
+	printf("   MultiBlock transfer ENABLED (First Board)\n");
+      else if(vr.vmeControl&VFTDC_VMECONTROL_LAST_BOARD)
+	printf("   MultiBlock transfer ENABLED (Last Board)\n");
+      else
+	printf("   MultiBlock transfer ENABLED\n");
+    }
+  else 
+    {
+      printf("   MultiBlock transfer DISABLED\n");
+    }
+
+  printf("  Trigger   Scaler         = %d\n",vr.trig1_scaler);
+  printf("  Trigger 2 Scaler         = %d\n",vr.trig2_scaler);
+  printf("  SyncReset Scaler         = %d\n",vr.sync_scaler);
+  printf("  Bus Error Scaler         = %d\n",vr.berr_scaler);
 
   printf("--------------------------------------------------------------------------------\n");
   printf("\n\n");
@@ -1015,7 +1138,7 @@ vfTDCSetWindowParamters(int id, int latency, int width)
       return ERROR;
     }
 
-  if((latency<0)||(latency>VFTDC_PL_MASK))
+  if((latency<0) || (latency>VFTDC_PL_MASK))
     {
       printf("%s: ERROR: Invalid latency (%d)\n",
 	     __FUNCTION__,latency);

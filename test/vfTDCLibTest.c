@@ -181,8 +181,10 @@ main(int argc, char *argv[]) {
   /*     gefVmeSetDebugFlags(vmeHdl,0x0); */
   /* Set the TI structure pointer */
   /*     tiInit((2<<19),TI_READOUT_EXT_POLL,0); */
-  tiA32Base=0x09000000;
-  tiInit(0,TI_READOUT_EXT_POLL,0);
+  tiA32Base=0x08000000;
+  if(tiInit(0,TI_READOUT_EXT_POLL,0)!=OK)
+    goto CLOSE;
+
   tiCheckAddresses();
 
   tiSetSyncEventInterval(10);
@@ -237,13 +239,18 @@ main(int argc, char *argv[]) {
   /*************************************************************/
   /* VFTDC initialization                                      */
   /*************************************************************/
-  vfTDCInit(3<<19, 1<<19, 18, 
-	    VFTDC_INIT_SOFT_SYNCRESET |
-	    VFTDC_INIT_SOFT_TRIG      |
-	    VFTDC_INIT_INT_CLKSRC);
+  extern unsigned int vfTDCA32Base;
+
+  vfTDCA32Base=0x09000000;
+  vfTDCInit(10<<19, 1<<19, 1, 
+	    VFTDC_INIT_VXS_SYNCRESET |
+	    VFTDC_INIT_VXS_TRIG      |
+	    VFTDC_INIT_VXS_CLKSRC);
 
   vfTDCSetBlockLevel(0, BLOCKLEVEL);
-  vfTDCSetWindowParamters(0, 750, 750);
+  vfTDCSetWindowParamters(0, 1, 250);
+
+  goto CLOSE;
 
 
   printf("Hit enter to reset stuff\n");

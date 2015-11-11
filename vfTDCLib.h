@@ -74,9 +74,14 @@ struct vfTDC_struct
   /** 0x0024 */ volatile unsigned int sync;
   /** 0x0028 */ volatile unsigned int busy;
   /** 0x002C */ volatile unsigned int clock;
-  /** 0x0030 */          unsigned int blank1[(0x4C-0x30)/4];
+  /** 0x0030 */ volatile unsigned int trig1_scaler;
+  /** 0x0034 */          unsigned int blank1[(0x4C-0x34)/4];
   /** 0x004C */ volatile unsigned int blockBuffer;
-  /** 0x0050 */          unsigned int blank2[(0x9C-0x50)/4];
+  /** 0x0050 */ volatile unsigned int trig2_scaler;
+  /** 0x0054 */ volatile unsigned int sync_scaler;
+  /** 0x0058 */ volatile unsigned int berr_scaler;
+  /** 0x005C */ volatile unsigned int status;
+  /** 0x0060 */          unsigned int blank2[(0x9C-0x60)/4];
   /** 0x009C */ volatile unsigned int runningMode;
   /** 0x00A0 */          unsigned int blank3[(0xA8-0xA0)/4];
   /** 0x00A8 */ volatile unsigned int livetime;
@@ -130,7 +135,7 @@ struct vfTDC_struct
 #define VFTDC_TRIGSRC_SOURCEMASK       0x0000FFFF
 #define VFTDC_TRIGSRC_VXS              (1<<0)
 #define VFTDC_TRIGSRC_HFBR1            (1<<1)
-#define VFTDC_TRIGSRC_FPTRG            (1<<3)
+#define VFTDC_TRIGSRC_FP               (1<<3)
 #define VFTDC_TRIGSRC_VME              (1<<4)
 #define VFTDC_TRIGSRC_PULSER           (1<<7)
 #define VFTDC_TRIGSRC_MONITOR_MASK     0xFFFF0000
@@ -214,11 +219,11 @@ struct vfTDC_struct
 #define VFTDC_INIT_SOFT_TRIG           (0<<2)
 #define VFTDC_INIT_HFBR1_TRIG          (1<<2)
 #define VFTDC_INIT_VXS_TRIG            (2<<2)
-#define VFTDC_INIT_TRIGSRC_MASK        0xE
+#define VFTDC_INIT_TRIGSRC_MASK        0x1C
 #define VFTDC_INIT_INT_CLKSRC          (0<<5)
 #define VFTDC_INIT_HFBR1_CLKSRC        (1<<5)
 #define VFTDC_INIT_VXS_CLKSRC          (2<<5)
-#define VFTDC_INIT_CLKSRC_MASK         0x30
+#define VFTDC_INIT_CLKSRC_MASK         0x60
 #define VFTDC_INIT_SKIP                (1<<16)
 #define VFTDC_INIT_USE_ADDRLIST        (1<<17)
 #define VFTDC_INIT_SKIP_FIRMWARE_CHECK (1<<18)
