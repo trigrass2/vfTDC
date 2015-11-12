@@ -31,7 +31,7 @@
 #define VFTDC_VME_INT_LEVEL           3     
 #define VFTDC_VME_INT_VEC          0xFA
 
-#define VFTDC_SUPPORTED_FIRMWARE 0xA2
+#define VFTDC_SUPPORTED_FIRMWARE 0x41
 
 #ifndef VXWORKS
 #include <pthread.h>
@@ -178,6 +178,27 @@ struct vfTDC_struct
 #define VFTDC_BLOCKBUFFER_BLOCKS_READY_MASK     0x0000FF00
 #define VFTDC_BLOCKBUFFER_BREADY_INT_MASK       0x00FF0000
 #define VFTDC_BLOCKBUFFER_TRIGGERS_IN_BLOCK     0xFF000000
+
+/* 0x5c Status bits and masks */
+#define VFTDC_STATUS_BERR                         (1<<0)
+#define VFTDC_STATUS_TOKEN                        (1<<1)
+#define VFTDC_STATUS_BERR_N                       (1<<2)
+#define VFTDC_STATUS_TAKE_TOKEN                   (1<<3)
+#define VFTDC_STATUS_READ_TOKEN_OUT               (1<<4)
+#define VFTDC_STATUS_DONE_BLOCK                   (1<<5)
+#define VFTDC_STATUS_BERR_STATUS                  (1<<6)
+#define VFTDC_STATUS_FIRST_BUFFER_FULL_A          (1<<8)
+#define VFTDC_STATUS_FIRST_BUFFER_FULL_B          (1<<9)
+#define VFTDC_STATUS_FIRST_BUFFER_EMPTY_A         (1<<10)
+#define VFTDC_STATUS_FIRST_BUFFER_EMPTY_B         (1<<11)
+#define VFTDC_STATUS_SECOND_BUFFER_FULL_A         (1<<12)
+#define VFTDC_STATUS_SECOND_BUFFER_FULL_B         (1<<13)
+#define VFTDC_STATUS_SECOND_BUFFER_ALMOST_FULL_B  (1<<14)
+#define VFTDC_STATUS_SECOND_BUFFER_EMPTY_B        (1<<15)
+#define VFTDC_STATUS_SECOND_BUFFER_ALMOST_FULL_A  (1<<16)
+#define VFTDC_STATUS_FIRMWARE_REV_MASK            0x00F00000
+#define VFTDC_STATUS_FIRMWARE_VERS_MASK           0xFF000000
+#define VFTDC_STATUS_FIRMWARE_VERSION_MASK        0xFFF00000
 
 /* 0x9C runningMode settings */
 #define VFTDC_RUNNINGMODE_ENABLE          0xF7

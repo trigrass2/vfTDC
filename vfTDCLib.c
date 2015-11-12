@@ -275,15 +275,15 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 		  continue;
 		}
 
-#ifdef NOTYET
 	      if(!noFirmwareCheck)
 		{
 		  /* Check FPGA firmware version */
-		  if( (rdata&VFTDC_VERSION_MASK) < VFTDC_SUPPORTED_CTRL_FIRMWARE )
+		  if( ((vmeRead32(&ft->status)&VFTDC_STATUS_FIRMWARE_VERSION_MASK)>>20) != 
+		      VFTDC_SUPPORTED_FIRMWARE )
 		    {
 		      printf("%s: ERROR: Slot %2d: FPGA Firmware (0x%02x) not supported by this driver.\n",
-			     __FUNCTION__,boardID, rdata & VFTDC_VERSION_MASK);
-		      printf("\tUpdate to 0x%02x to use this driver.\n",VFTDC_SUPPORTED_CTRL_FIRMWARE);
+			     __FUNCTION__,boardID, rdata & VFTDC_STATUS_FIRMWARE_VERSION_MASK);
+		      printf("\tUpdate to 0x%02x to use this driver.\n",VFTDC_SUPPORTED_FIRMWARE);
 		      continue;
 		    }
 
@@ -291,14 +291,12 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 	      else
 		{
 		  /* Check FPGA firmware version */
-		  if( (rdata&VFTDC_VERSION_MASK) < VFTDC_SUPPORTED_CTRL_FIRMWARE )
-		    {
+		  if( (((vmeRead32(&ft->status)>>20)&VFTDC_STATUS_FIRMWARE_VERSION_MASK)>>20) != 
+		      VFTDC_SUPPORTED_FIRMWARE )
 		      printf("%s: WARN: Slot %2d: FPGA Firmware (0x%02x) not supported by this driver (ignored).\n",
-			     __FUNCTION__,boardID, rdata & VFTDC_VERSION_MASK);
-		    }
-
+			     __FUNCTION__,boardID, rdata & VFTDC_STATUS_FIRMWARE_VERSION_MASK);
 		}
-#endif /* NOTYET */
+
 
 	      TDCp[boardID] = (struct vfTDC_struct *)(laddr_inc);
 	      vfTDCID[nvfTDC] = boardID;
@@ -314,17 +312,15 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 	}
     }
 
-#ifdef NOTYET
   /* Hard Reset of all VFTDC boards in the Crate */
   if(!noBoardInit)
     {
       for(ii=0;ii<nvfTDC;ii++) 
 	{
-	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_ALL);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_SOFT | VFTDC_RESET_SCALERS_RESET);
 	}
       taskDelay(60); 
     }
-#endif /* NOTYET */
 
   /* Initialize Interrupt variables */
   vfTDCIntRunning = FALSE;
@@ -386,7 +382,6 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 	  wreg = VFTDC_CLOCK_INTERNAL;
 	  break;
 	}
-
 
       for(ii=0;ii<nvfTDC;ii++) 
 	{
@@ -482,7 +477,9 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
       TDCpd[vfTDCID[ii]] = (unsigned int *)(laddr);  /* Set a pointer to the FIFO */
       if(!noBoardInit)
 	{
-	  vmeWrite32(&TDCp[vfTDCID[ii]]->adr32,(a32addr>>16) + 1);  /* Write the register and enable */
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->adr32,a32addr);  /* Write the register */
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->vmeControl,
+		     vmeRead32(&TDCp[vfTDCID[ii]]->vmeControl) | VFTDC_VMECONTROL_A32);
 	
 	  /* Set Default Block Level to 1 */
 	  vmeWrite32(&TDCp[vfTDCID[ii]]->blocklevel,1);
@@ -642,10 +639,14 @@ vfTDCStatus(int id, int pflag)
   vr.eventNumber_hi = vmeRead32(&TDCp[id]->eventNumber_hi);
   vr.eventNumber_lo = vmeRead32(&TDCp[id]->eventNumber_lo);
 
+  vmeWrite32(&TDCp[id]->reset,VFTDC_RESET_SCALERS_LATCH);
+
   vr.trig1_scaler   = vmeRead32(&TDCp[id]->trig1_scaler);
   vr.trig2_scaler   = vmeRead32(&TDCp[id]->trig2_scaler);
   vr.sync_scaler    = vmeRead32(&TDCp[id]->sync_scaler);
   vr.berr_scaler    = vmeRead32(&TDCp[id]->berr_scaler);
+
+  vr.status         = vmeRead32(&TDCp[id]->status);
 
   VUNLOCK;
 
@@ -659,10 +660,9 @@ vfTDCStatus(int id, int pflag)
 #endif
   printf("--------------------------------------------------------------------------------\n");
 
-#ifdef NOTYET
-  printf(" Board Firmware Rev/ID = 0x%04x : ADC Processing Rev = 0x%04x\n",
-	 (vers)&0xffff, tdc_version);
-#endif
+  printf(" Board Firmware Rev.Vers = %d.%d\n\n",
+	 (vr.status&VFTDC_STATUS_FIRMWARE_VERS_MASK)>>24,
+	 (vr.status&VFTDC_STATUS_FIRMWARE_REV_MASK)>>20);
 
   if(vr.vmeControl&VFTDC_VMECONTROL_A32M) 
     {
@@ -700,43 +700,46 @@ vfTDCStatus(int id, int pflag)
   printf("\n");
   printf(" Signal Sources: \n");
 
+  printf("   Ref Clock : ");
   if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_INTERNAL) 
     {
-      printf("   Ref Clock : Internal\n");
+      printf("Internal\n");
     }
   else if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_VXS) 
     {
-      printf("   Ref Clock : VXS\n");
+      printf("VXS\n");
     }
   else if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_HFBR1) 
     {
-      printf("   Ref Clock : Fiber 1\n");
+      printf("Fiber 1 (Bogus readback... ignore)\n");
     }
   else
     {
-      printf("   Ref Clock : Undefined (%d)\n",
-	     (vr.clock&VFTDC_CLOCK_MASK));
+      printf("Undefined (%d)\n",(vr.clock&VFTDC_CLOCK_MASK));
     }
 
-  printf("   Trig Src  : \n");
+  printf("   Trig Src  : ");
   if(vr.trigsrc & VFTDC_TRIGSRC_VXS)
-    printf("               VXS\n");
+    printf("VXS  ");
   if(vr.trigsrc & VFTDC_TRIGSRC_HFBR1)
-    printf("               Fiber 1\n");
+    printf("Fiber 1  ");
   if(vr.trigsrc & VFTDC_TRIGSRC_FP)
-    printf("               Front Panel\n");
+    printf("Front Panel  ");
   if(vr.trigsrc & VFTDC_TRIGSRC_VME)
-    printf("               VME (Software)\n");
+    printf("VME (Software)");
+  printf("\n");
   
-  printf("   Sync Reset: \n");
+  printf("   Sync Reset: ");
   if(vr.sync & VFTDC_SYNC_VXS)
-    printf("               VXS\n");
+    printf("VXS  ");
   if(vr.sync & VFTDC_SYNC_HFBR1)
-    printf("               Fiber 1\n");
+    printf("Fiber 1  ");
   if(vr.sync & VFTDC_SYNC_FP)
-    printf("               Front Panel\n");
+    printf("Front Panel  ");
   if(vr.sync & VFTDC_SYNC_VME)
-    printf("               VME (Software)\n");
+    printf("VME (Software)");
+  printf("\n\n");
+
 
   if(vr.vmeControl&VFTDC_VMECONTROL_MBLK) 
     {
@@ -751,11 +754,12 @@ vfTDCStatus(int id, int pflag)
     {
       printf("   MultiBlock transfer DISABLED\n");
     }
+  printf("\n");
 
-  printf("  Trigger   Scaler         = %d\n",vr.trig1_scaler);
-  printf("  Trigger 2 Scaler         = %d\n",vr.trig2_scaler);
-  printf("  SyncReset Scaler         = %d\n",vr.sync_scaler);
-  printf("  Bus Error Scaler         = %d\n",vr.berr_scaler);
+  printf(" Trigger   Scaler         = %d\n",vr.trig1_scaler);
+  printf(" Trigger 2 Scaler         = %d\n",vr.trig2_scaler);
+  printf(" SyncReset Scaler         = %d\n",vr.sync_scaler);
+  printf(" Bus Error Scaler         = %d\n",vr.berr_scaler);
 
   printf("--------------------------------------------------------------------------------\n");
   printf("\n\n");
@@ -1304,21 +1308,19 @@ vfTDCReadBlock(int id, volatile UINT32 *data, int nwrds, int rflag)
 
       if(retVal > 0) 
 	{
-#ifdef NOTSUPPORTED
 	  /* Check to see that Bus error was generated by VFTDC */
 	  if(rmode == 2) 
 	    {
-	      csr = vmeRead32(&TDCp[vfTDCMaxSlot]->main.blockCSR);  /* from Last VFTDC */
-	      stat = (csr)&VFTDC_BLOCKCSR_BERR_ASSERTED;  /* from Last VFTDC */
+#ifdef NOTSUPPORTED
+	      csr = vmeRead32(&TDCp[vfTDCMaxSlot]->status);  /* from Last VFTDC */
+#endif
 	    }
 	  else
 	    {
-	      csr = vmeRead32(&TDCp[id]->main.blockCSR);  /* from Last VFTDC */
-	      stat = (csr)&VFTDC_BLOCKCSR_BERR_ASSERTED;  /* from Last VFTDC */
+	      csr = vmeRead32(&TDCp[id]->status);
 	    }
-#else
-	  stat=1;
-#endif
+	  stat = (csr)&VFTDC_STATUS_BERR;
+
 	  if((retVal>0) && (stat)) 
 	    {
 #ifdef VXWORKS

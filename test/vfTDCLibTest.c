@@ -23,7 +23,7 @@ extern unsigned int *dma_dabufp;
 
 extern int tiA32Base;
 
-#define BLOCKLEVEL 2
+#define BLOCKLEVEL 1
 
 #define DO_READOUT
 
@@ -63,17 +63,17 @@ mytiISR(int arg)
       return;
     }
 #endif
-  vfTDCSoftTrig(0);
 
-  dCnt = tiReadBlock(dma_dabufp,3*BLOCKLEVEL+10,1);
-/*   dCnt = tiReadTriggerBlock(dma_dabufp); */
+/*   dCnt = tiReadBlock(dma_dabufp,3*BLOCKLEVEL+10,1); */
+  dCnt = tiReadTriggerBlock(dma_dabufp);
   if(dCnt<=0)
     {
       printf("No data or error.  dCnt = %d\n",dCnt);
     }
   else
     {
-      dma_dabufp += dCnt;
+      tiCheckTriggerBlock(dma_dabufp);
+/*       dma_dabufp += dCnt; */
       /*       printf("dCnt = %d\n",dCnt); */
     
     }
@@ -119,8 +119,9 @@ mytiISR(int arg)
       
       for(idata=0;idata<len;idata++)
 	{
-	  if((idata%5)==0) printf("\n\t");
-	  printf("  0x%08x ",(unsigned int)LSWAP(outEvent->data[idata]));
+/* 	  if((idata%5)==0) printf("\n\t"); */
+/* 	  printf("  0x%08x ",(unsigned int)LSWAP(outEvent->data[idata])); */
+	  vfTDCDataDecode(LSWAP(outEvent->data[idata]));
 	}
       printf("\n\n");
     }
@@ -234,7 +235,7 @@ main(int argc, char *argv[]) {
   tiSetFiberDelay(1,2);
   tiSetSyncDelayWidth(1,0x3f,1);
     
-  tiSetBlockLimit(0);
+  tiSetBlockLimit(10);
 
   /*************************************************************/
   /* VFTDC initialization                                      */
@@ -242,7 +243,7 @@ main(int argc, char *argv[]) {
   extern unsigned int vfTDCA32Base;
 
   vfTDCA32Base=0x09000000;
-  vfTDCInit(10<<19, 1<<19, 1, 
+  vfTDCInit(14<<19, 1<<19, 1, 
 	    VFTDC_INIT_VXS_SYNCRESET |
 	    VFTDC_INIT_VXS_TRIG      |
 	    VFTDC_INIT_VXS_CLKSRC);
@@ -250,8 +251,7 @@ main(int argc, char *argv[]) {
   vfTDCSetBlockLevel(0, BLOCKLEVEL);
   vfTDCSetWindowParamters(0, 1, 250);
 
-  goto CLOSE;
-
+  vfTDCStatus(0,0);
 
   printf("Hit enter to reset stuff\n");
   getchar();
@@ -267,11 +267,11 @@ main(int argc, char *argv[]) {
   taskDelay(1);
 
   tiSyncReset(1);
-  vfTDCSyncReset(0);
 
   taskDelay(1);
     
   tiStatus(1);
+  vfTDCStatus(0,0);
 
   printf("Hit enter to start triggers\n");
   getchar();
@@ -299,6 +299,8 @@ main(int argc, char *argv[]) {
   tiIntDisable();
 
   tiIntDisconnect();
+
+  vfTDCStatus(0,0);
 
   if(again==1)
     {
