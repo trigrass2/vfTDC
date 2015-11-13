@@ -31,7 +31,7 @@
 #define VFTDC_VME_INT_LEVEL           3     
 #define VFTDC_VME_INT_VEC          0xFA
 
-#define VFTDC_SUPPORTED_FIRMWARE 0x41
+#define VFTDC_SUPPORTED_FIRMWARE 0x42
 
 #ifndef VXWORKS
 #include <pthread.h>
@@ -198,7 +198,8 @@ struct vfTDC_struct
 #define VFTDC_STATUS_SECOND_BUFFER_ALMOST_FULL_A  (1<<16)
 #define VFTDC_STATUS_FIRMWARE_REV_MASK            0x00F00000
 #define VFTDC_STATUS_FIRMWARE_VERS_MASK           0xFF000000
-#define VFTDC_STATUS_FIRMWARE_VERSION_MASK        0xFFF00000
+#define VFTDC_STATUS_FIRMWARE_VERSION_MASK        0x7FF00000
+#define VFTDC_STATUS_HI_REZ_MODE                  (1<<31)
 
 /* 0x9C runningMode settings */
 #define VFTDC_RUNNINGMODE_ENABLE          0xF7

@@ -160,7 +160,7 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
   int maxSlot = 1;
   int minSlot = 21;
   int trigSrc=0, clkSrc=0, srSrc=0;
-  unsigned int rdata=0, a32addr=0, wreg=0;
+  unsigned int rdata=0, a32addr=0, wreg=0, fwvers=0;
   unsigned long laddr=0, laddr_inc=0;
   volatile struct vfTDC_struct *ft;
   int noBoardInit=0;
@@ -275,14 +275,14 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 		  continue;
 		}
 
+	      fwvers = (vmeRead32(&ft->status)&VFTDC_STATUS_FIRMWARE_VERSION_MASK)>>20;
 	      if(!noFirmwareCheck)
 		{
 		  /* Check FPGA firmware version */
-		  if( ((vmeRead32(&ft->status)&VFTDC_STATUS_FIRMWARE_VERSION_MASK)>>20) != 
-		      VFTDC_SUPPORTED_FIRMWARE )
+		  if( fwvers != VFTDC_SUPPORTED_FIRMWARE )
 		    {
 		      printf("%s: ERROR: Slot %2d: FPGA Firmware (0x%02x) not supported by this driver.\n",
-			     __FUNCTION__,boardID, rdata & VFTDC_STATUS_FIRMWARE_VERSION_MASK);
+			     __FUNCTION__,boardID, fwvers);
 		      printf("\tUpdate to 0x%02x to use this driver.\n",VFTDC_SUPPORTED_FIRMWARE);
 		      continue;
 		    }
@@ -291,10 +291,9 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 	      else
 		{
 		  /* Check FPGA firmware version */
-		  if( (((vmeRead32(&ft->status)>>20)&VFTDC_STATUS_FIRMWARE_VERSION_MASK)>>20) != 
-		      VFTDC_SUPPORTED_FIRMWARE )
+		  if( fwvers != VFTDC_SUPPORTED_FIRMWARE )
 		      printf("%s: WARN: Slot %2d: FPGA Firmware (0x%02x) not supported by this driver (ignored).\n",
-			     __FUNCTION__,boardID, rdata & VFTDC_STATUS_FIRMWARE_VERSION_MASK);
+			     __FUNCTION__,boardID, fwvers);
 		}
 
 
@@ -385,7 +384,8 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 
       for(ii=0;ii<nvfTDC;ii++) 
 	{
-	  vmeWrite32(&TDCp[vfTDCID[ii]]->clock, wreg);
+	  vmeWrite32(&TDCp[vfTDCID[ii]]->clock, 
+		     (wreg) | (wreg<<2) | (wreg<<4) | (wreg<<6));
 	  taskDelay(1);
 	  vmeWrite32(&TDCp[vfTDCID[ii]]->reset,VFTDC_RESET_CLK250);
 	  taskDelay(1);
@@ -631,7 +631,7 @@ vfTDCStatus(int id, int pflag)
   vr.trigsrc        = vmeRead32(&TDCp[id]->trigsrc);
   vr.sync           = vmeRead32(&TDCp[id]->sync);
   vr.busy           = vmeRead32(&TDCp[id]->busy);
-  vr.clock          = vmeRead32(&TDCp[id]->clock);
+  vr.clock          = (vmeRead32(&TDCp[id]->clock))>>8;
   vr.blockBuffer    = vmeRead32(&TDCp[id]->blockBuffer);
   vr.runningMode    = vmeRead32(&TDCp[id]->runningMode);
   vr.livetime       = vmeRead32(&TDCp[id]->livetime);
@@ -660,9 +660,11 @@ vfTDCStatus(int id, int pflag)
 #endif
   printf("--------------------------------------------------------------------------------\n");
 
-  printf(" Board Firmware Rev.Vers = %d.%d\n\n",
+  printf(" Board Firmware Rev.Vers = %d.%d  -- %s\n\n",
 	 (vr.status&VFTDC_STATUS_FIRMWARE_VERS_MASK)>>24,
-	 (vr.status&VFTDC_STATUS_FIRMWARE_REV_MASK)>>20);
+	 (vr.status&VFTDC_STATUS_FIRMWARE_REV_MASK)>>20,
+	 (vr.status&VFTDC_STATUS_HI_REZ_MODE)?
+	 "High Resolution (96 chan)":"Normal Resolution (192 chan)");
 
   if(vr.vmeControl&VFTDC_VMECONTROL_A32M) 
     {
@@ -711,7 +713,7 @@ vfTDCStatus(int id, int pflag)
     }
   else if((vr.clock&VFTDC_CLOCK_MASK)==VFTDC_CLOCK_HFBR1) 
     {
-      printf("Fiber 1 (Bogus readback... ignore)\n");
+      printf("Fiber 1\n");
     }
   else
     {
