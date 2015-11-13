@@ -479,10 +479,12 @@ vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag)
 	{
 	  vmeWrite32(&TDCp[vfTDCID[ii]]->adr32,a32addr);  /* Write the register */
 	  vmeWrite32(&TDCp[vfTDCID[ii]]->vmeControl,
-		     vmeRead32(&TDCp[vfTDCID[ii]]->vmeControl) | VFTDC_VMECONTROL_A32);
+		     vmeRead32(&TDCp[vfTDCID[ii]]->vmeControl) | 
+		     VFTDC_VMECONTROL_A32 | VFTDC_VMECONTROL_BERR);
 	
 	  /* Set Default Block Level to 1 */
 	  vmeWrite32(&TDCp[vfTDCID[ii]]->blocklevel,1);
+
 	}
 
     }

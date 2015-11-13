@@ -93,7 +93,7 @@ mytiISR(int arg)
       return;
     }
 
-  dCnt = vfTDCReadBlock(0,dma_dabufp,3*BLOCKLEVEL+10,1);
+  dCnt = vfTDCReadBlock(0,dma_dabufp,BLOCKLEVEL*(10*192+10),1);
   if(dCnt<=0)
     {
       printf("No data or error.  dCnt = %d\n",dCnt);
@@ -250,7 +250,6 @@ main(int argc, char *argv[]) {
 
   vfTDCSetBlockLevel(0, BLOCKLEVEL);
   vfTDCSetWindowParamters(0, 1, 250);
-
   vfTDCStatus(0,0);
 
   printf("Hit enter to reset stuff\n");

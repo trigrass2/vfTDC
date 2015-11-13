@@ -225,7 +225,8 @@ rocTrigger(int arg)
       return;
     }
 
-  dCnt = vfTDCReadBlock(0,dma_dabufp,3*BLOCKLEVEL+10,1);
+  /* e.g. Max number of words = Blocklevel * (10 hits per channel + 10 other words) */
+  dCnt = vfTDCReadBlock(0,dma_dabufp,BLOCKLEVEL*(10*192+10),1);
   if(dCnt<=0)
     {
       printf("%s: No vfTDC data or error.  dCnt = %d\n",__FUNCTION__,dCnt);
