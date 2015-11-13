@@ -30,7 +30,7 @@
 
 /* Default block level */
 unsigned int BLOCKLEVEL=1;
-#define BUFFERLEVEL 3
+#define BUFFERLEVEL 1
 
 /* Redefine tsCrate according to TI_MASTER or TI_SLAVE */
 #ifdef TI_SLAVE
@@ -96,7 +96,6 @@ rocDownload()
   /* Set the busy source to non-default value (no Switch Slot B busy) */
   tiSetBusySource(TI_BUSY_LOOPBACK,1);
 
-/*   tiSetFiberDelay(10,0xcf); */
 
 #ifdef TI_MASTER
   /* Set number of events per block */
@@ -118,8 +117,9 @@ rocDownload()
 	    VFTDC_INIT_VXS_TRIG      |
 	    VFTDC_INIT_VXS_CLKSRC);
 
-  vfTDCSetBlockLevel(0, BLOCKLEVEL);
-  vfTDCSetWindowParamters(0, 1, 250);
+  int window_width   = 250; /* 250 = 250*4ns = 1000ns */
+  int window_latency = 100; /* 100 = 100*4ns =  400ns */
+  vfTDCSetWindowParamters(0, window_latency, window_width);
 
   vfTDCStatus(0,0);
 
@@ -162,6 +162,9 @@ rocGo()
 	 __FUNCTION__,BLOCKLEVEL);
 
   /* Use this info to change block level is all modules */
+  vfTDCSetBlockLevel(0, BLOCKLEVEL);
+
+
 
 }
 
