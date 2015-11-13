@@ -24,14 +24,14 @@
 #define VFTDC_INT_LEVEL    5
 
 #define VFTDC_MAX_BOARDS             20
-#define VFTDC_MAX_ADC_CHANNELS       16
-#define VFTDC_MAX_DATA_PER_CHANNEL  251
+#define VFTDC_MAX_TDC_CHANNELS      192
+#define VFTDC_MAX_DATA_PER_CHANNEL    8
 #define VFTDC_MAX_A32_MEM      0x800000   /* 8 Meg */
 #define VFTDC_MAX_A32MB_SIZE   0x800000  /*  8 MB */
 #define VFTDC_VME_INT_LEVEL           3     
 #define VFTDC_VME_INT_VEC          0xFA
 
-#define VFTDC_SUPPORTED_FIRMWARE 0xA2
+#define VFTDC_SUPPORTED_FIRMWARE 0x42
 
 #ifndef VXWORKS
 #include <pthread.h>
@@ -74,9 +74,14 @@ struct vfTDC_struct
   /** 0x0024 */ volatile unsigned int sync;
   /** 0x0028 */ volatile unsigned int busy;
   /** 0x002C */ volatile unsigned int clock;
-  /** 0x0030 */          unsigned int blank1[(0x4C-0x30)/4];
+  /** 0x0030 */ volatile unsigned int trig1_scaler;
+  /** 0x0034 */          unsigned int blank1[(0x4C-0x34)/4];
   /** 0x004C */ volatile unsigned int blockBuffer;
-  /** 0x0050 */          unsigned int blank2[(0x9C-0x50)/4];
+  /** 0x0050 */ volatile unsigned int trig2_scaler;
+  /** 0x0054 */ volatile unsigned int sync_scaler;
+  /** 0x0058 */ volatile unsigned int berr_scaler;
+  /** 0x005C */ volatile unsigned int status;
+  /** 0x0060 */          unsigned int blank2[(0x9C-0x60)/4];
   /** 0x009C */ volatile unsigned int runningMode;
   /** 0x00A0 */          unsigned int blank3[(0xA8-0xA0)/4];
   /** 0x00A8 */ volatile unsigned int livetime;
@@ -97,10 +102,16 @@ struct vfTDC_struct
 #define VFTDC_BOARDID_GEOADR_MASK   0x00001F00
 #define VFTDC_BOARDID_CRATEID_MASK  0x000000FF
 
+/* 0x4 ptw bits and masks */
+#define VFTDC_PTW_MASK  0x000000FF
+
 /* 0x8 intsetup bits and masks */
 #define VFTDC_INTSETUP_VECTOR_MASK   0x000000FF
 #define VFTDC_INTSETUP_LEVEL_MASK    0x00000F00
 #define VFTDC_INTSETUP_ENABLE        (1<<16)
+
+/* 0xC pl bits and masks */
+#define VFTDC_PL_MASK   0x000002FF
 
 /* 0x10 adr32 bits and masks */
 #define VFTDC_ADR32_MBLK_ADDR_MAX_MASK  0x000003FE
@@ -122,16 +133,16 @@ struct vfTDC_struct
 
 /* 0x20 trigsrc bits and masks */
 #define VFTDC_TRIGSRC_SOURCEMASK       0x0000FFFF
-#define VFTDC_TRIGSRC_P0               (1<<0)
+#define VFTDC_TRIGSRC_VXS              (1<<0)
 #define VFTDC_TRIGSRC_HFBR1            (1<<1)
-#define VFTDC_TRIGSRC_FPTRG            (1<<3)
+#define VFTDC_TRIGSRC_FP               (1<<3)
 #define VFTDC_TRIGSRC_VME              (1<<4)
 #define VFTDC_TRIGSRC_PULSER           (1<<7)
 #define VFTDC_TRIGSRC_MONITOR_MASK     0xFFFF0000
 
 /* 0x24 sync bits and masks */
 #define VFTDC_SYNC_SOURCEMASK              0x0000FFFF
-#define VFTDC_SYNC_P0                      (1<<0)
+#define VFTDC_SYNC_VXS                     (1<<0)
 #define VFTDC_SYNC_HFBR1                   (1<<1)
 #define VFTDC_SYNC_FP                      (1<<3)
 #define VFTDC_SYNC_VME                     (1<<4)
@@ -158,15 +169,37 @@ struct vfTDC_struct
 #define VFTDC_BUSY_MONITOR_MASK     0xFFFF0000
 
 /* 0x2C clock bits and mask  */
-#define VFTDC_CLOCK_FP          (0)
+#define VFTDC_CLOCK_HFBR1       (0)
 #define VFTDC_CLOCK_INTERNAL    (2)
-#define VFTDC_CLOCK_P0          (3)
+#define VFTDC_CLOCK_VXS         (3)
 #define VFTDC_CLOCK_MASK        0x00000003
 
 /* 0x34 blockBuffer bits and masks */
 #define VFTDC_BLOCKBUFFER_BLOCKS_READY_MASK     0x0000FF00
 #define VFTDC_BLOCKBUFFER_BREADY_INT_MASK       0x00FF0000
 #define VFTDC_BLOCKBUFFER_TRIGGERS_IN_BLOCK     0xFF000000
+
+/* 0x5c Status bits and masks */
+#define VFTDC_STATUS_BERR                         (1<<0)
+#define VFTDC_STATUS_TOKEN                        (1<<1)
+#define VFTDC_STATUS_BERR_N                       (1<<2)
+#define VFTDC_STATUS_TAKE_TOKEN                   (1<<3)
+#define VFTDC_STATUS_READ_TOKEN_OUT               (1<<4)
+#define VFTDC_STATUS_DONE_BLOCK                   (1<<5)
+#define VFTDC_STATUS_BERR_STATUS                  (1<<6)
+#define VFTDC_STATUS_FIRST_BUFFER_FULL_A          (1<<8)
+#define VFTDC_STATUS_FIRST_BUFFER_FULL_B          (1<<9)
+#define VFTDC_STATUS_FIRST_BUFFER_EMPTY_A         (1<<10)
+#define VFTDC_STATUS_FIRST_BUFFER_EMPTY_B         (1<<11)
+#define VFTDC_STATUS_SECOND_BUFFER_FULL_A         (1<<12)
+#define VFTDC_STATUS_SECOND_BUFFER_FULL_B         (1<<13)
+#define VFTDC_STATUS_SECOND_BUFFER_ALMOST_FULL_B  (1<<14)
+#define VFTDC_STATUS_SECOND_BUFFER_EMPTY_B        (1<<15)
+#define VFTDC_STATUS_SECOND_BUFFER_ALMOST_FULL_A  (1<<16)
+#define VFTDC_STATUS_FIRMWARE_REV_MASK            0x00F00000
+#define VFTDC_STATUS_FIRMWARE_VERS_MASK           0xFF000000
+#define VFTDC_STATUS_FIRMWARE_VERSION_MASK        0x7FF00000
+#define VFTDC_STATUS_HI_REZ_MODE                  (1<<31)
 
 /* 0x9C runningMode settings */
 #define VFTDC_RUNNINGMODE_ENABLE          0xF7
@@ -179,38 +212,40 @@ struct vfTDC_struct
 #define VFTDC_RUNNINGMODE_DISABLE         0x00
 
 /* 0xD8 eventNumber_hi bits and masks */
-#define TI_EVENTNUMBER_HI_MASK        0xFFFF0000
+#define VFTDC_EVENTNUMBER_HI_MASK        0xFFFF0000
 
 /* 0xEC rocEnable bits and masks */
-#define TI_ROCENABLE_MASK             0x000000FF
-#define TI_ROCENABLE_ROC(x)           (1<<(x))
+#define VFTDC_ROCENABLE_MASK             0x000000FF
+#define VFTDC_ROCENABLE_ROC(x)           (1<<(x))
 
 /* 0x100 reset bits and masks */
-#define TI_RESET_I2C                  (1<<1)
-#define TI_RESET_SOFT                 (1<<4)
-#define TI_RESET_SYNCRESET            (1<<5)
-#define TI_RESET_BUSYACK              (1<<7)
-#define TI_RESET_CLK250               (1<<8)
-#define TI_RESET_MGT                  (1<<10)
-#define TI_RESET_AUTOALIGN_HFBR1_SYNC (1<<11)
-#define TI_RESET_TRIGGER              (1<<12)
-#define TI_RESET_IODELAY              (1<<14)
-#define TI_RESET_TAKE_TOKEN           (1<<16)
-#define TI_RESET_BLOCK_READOUT        (1<<17)
-#define TI_RESET_SCALERS_LATCH        (1<<24)
-#define TI_RESET_SCALERS_RESET        (1<<25)
+#define VFTDC_RESET_I2C                  (1<<1)
+#define VFTDC_RESET_SOFT                 (1<<4)
+#define VFTDC_RESET_SYNCRESET            (1<<5)
+#define VFTDC_RESET_BUSYACK              (1<<7)
+#define VFTDC_RESET_CLK250               (1<<8)
+#define VFTDC_RESET_MGT                  (1<<10)
+#define VFTDC_RESET_AUTOALIGN_HFBR1_SYNC (1<<11)
+#define VFTDC_RESET_TRIGGER              (1<<12)
+#define VFTDC_RESET_IODELAY              (1<<14)
+#define VFTDC_RESET_TAKE_TOKEN           (1<<16)
+#define VFTDC_RESET_BLOCK_READOUT        (1<<17)
+#define VFTDC_RESET_SCALERS_LATCH        (1<<24)
+#define VFTDC_RESET_SCALERS_RESET        (1<<25)
 
 /* faInit initialization flag bits */
 #define VFTDC_INIT_SOFT_SYNCRESET      (0<<0)
-#define VFTDC_INIT_EXT_SYNCRESET       (1<<0)
-#define VFTDC_INIT_SOFT_TRIG           (0<<1)
-#define VFTDC_INIT_FP_TRIG             (1<<1)
-#define VFTDC_INIT_VXS_TRIG            (2<<1)
-#define VFTDC_INIT_INT_TRIG            (4<<1)
-#define VFTDC_INIT_INT_CLKSRC          (0<<4)
-#define VFTDC_INIT_FP_CLKSRC           (1<<4)
-#define VFTDC_INIT_VXS_CLKSRC          (2<<4)
-#define VFTDC_INIT_P2_CLKSRC           ((1<<4) | (2<<4))
+#define VFTDC_INIT_HFBR1_SYNCRESET     (1<<0)
+#define VFTDC_INIT_VXS_SYNCRESET       (2<<0)
+#define VFTDC_INIT_SYNCRESETSRC_MASK   0x3
+#define VFTDC_INIT_SOFT_TRIG           (0<<2)
+#define VFTDC_INIT_HFBR1_TRIG          (1<<2)
+#define VFTDC_INIT_VXS_TRIG            (2<<2)
+#define VFTDC_INIT_TRIGSRC_MASK        0x1C
+#define VFTDC_INIT_INT_CLKSRC          (0<<5)
+#define VFTDC_INIT_HFBR1_CLKSRC        (1<<5)
+#define VFTDC_INIT_VXS_CLKSRC          (2<<5)
+#define VFTDC_INIT_CLKSRC_MASK         0x60
 #define VFTDC_INIT_SKIP                (1<<16)
 #define VFTDC_INIT_USE_ADDRLIST        (1<<17)
 #define VFTDC_INIT_SKIP_FIRMWARE_CHECK (1<<18)
@@ -223,8 +258,66 @@ struct vfTDC_struct
 #define VFTDC_BLOCKERROR_DMADONE_ERROR     4
 #define VFTDC_BLOCKERROR_NTYPES            5
 
-/* Function prototypes */
+/* Data types and masks */
+#define VFTDC_DUMMY_DATA             0xf800f7dc
+#define VFTDC_DATA_TYPE_DEFINE       0x80000000
+#define VFTDC_DATA_TYPE_MASK         0x78000000
 
+#define VFTDC_DATA_BLOCK_HEADER      0x00000000
+#define VFTDC_DATA_BLOCK_TRAILER     0x08000000
+#define VFTDC_DATA_BLKNUM_MASK       0x0000003f
+
+struct vftdc_data_struct 
+{
+  unsigned int new_type;	
+  unsigned int type;	
+  unsigned int slot_id_hd;
+  unsigned int slot_id_tr;
+  unsigned int slot_id_evh;
+  unsigned int n_evts;
+  unsigned int blk_num;
+  unsigned int modID;
+  unsigned int PL;
+  unsigned int n_words;
+  unsigned int evt_num_1;
+  unsigned int evt_num_2;
+  unsigned int time_now;
+  unsigned int time_1;
+  unsigned int time_2;
+  unsigned int time_3;
+  unsigned int time_4;
+  unsigned int group;
+  unsigned int chan;
+  unsigned int edge_type;
+  unsigned int time_coarse;
+  unsigned int two_ns;
+  unsigned int time_fine;
+};
+
+/* Function prototypes */
+STATUS vfTDCInit(UINT32 addr, UINT32 addr_inc, int ntdc, int iFlag);
+int  vfTDCCheckAddresses();
+void vfTDCStatus(int id, int pflag);
+int  vfTDCReset(int id);
+int  vfTDCSetBlockLevel(int id, int blockLevel);
+int  vfTDCSetTriggerSource(int id, unsigned int trigmask);
+int  vfTDCSetSyncSource(int id, unsigned int sync);
+int  vfTDCSoftTrig(int id);
+int  vfTDCSetWindowParamters(int id, int latency, int width);
+int  vfTDCReadBlockStatus(int pflag);
+int  vfTDCReadBlock(int id, volatile UINT32 *data, int nwrds, int rflag);
+int  vfTDCEnableBusError(int id);
+int  vfTDCDisableBusError(int id);
+int  vfTDCSyncReset(int id);
+int  vfTDCSetAdr32(int id, unsigned int a32base);
+int  vfTDCDisableA32(int id);
+int  vfTDCResetEventCounter(int id);
+unsigned long long int vfTDCGetEventCounter(int id);
+unsigned int vfTDCBReady(int id);
+int  vfTDCSetClockSource(int id, unsigned int source);
+int  vfTDCGetClockSource(int id);
+int  vfTDCGetGeoAddress(int id);
+void vfTDCDataDecode(unsigned int data);
 
 
 #endif /* VFTDCLIB_H */
